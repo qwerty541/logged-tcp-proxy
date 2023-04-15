@@ -1,12 +1,16 @@
-use std::io::{self, Read, Write};
-use std::iter::Iterator;
+use logged_stream::DefaultFilter;
+use logged_stream::RecordKind;
+use tokio::io::{self, AsyncReadExt, AsyncWriteExt};
+use tokio::net as tokio_net;
+use tokio::time::timeout;
 use std::net;
-use std::sync;
-use std::thread;
-
-const POISONED_MUTEX_ERROR: &str = "Mutex::lock failed";
-const SET_NONBLOCKING_ERROR: &str = "TcpStream::set_nonblocking failed";
-const NONBLOCKING: bool = true;
+use std::env;
+use std::time::Duration;
+use logged_stream::LoggedStream;
+use logged_stream::HexDecimalFormatter;
+use logged_stream::ConsoleLogger;
+use logged_stream::RecordKindFilter;
+use bytes::BytesMut;
 
 lazy_static::lazy_static! {
     static ref LISTEN_ADDR: net::SocketAddr = net::SocketAddr::new(
@@ -17,131 +21,76 @@ lazy_static::lazy_static! {
     );
 }
 
-fn incoming_connection_handle(source_stream: net::TcpStream, source_addr: net::SocketAddr) {
-    source_stream
-        .set_nonblocking(NONBLOCKING)
-        .expect(SET_NONBLOCKING_ERROR);
-    let source_stream = sync::Arc::new(sync::Mutex::new(source_stream));
+const SOURCE_STREAM_READ_TIMEOUT_SECS: u64 = 60;
 
+async fn incoming_connection_handle(source_stream: tokio_net::TcpStream) {
+    let (mut source_stream_read_half, mut source_stream_write_half) = io::split(LoggedStream::new(
+        source_stream,
+        HexDecimalFormatter::new(None),
+        DefaultFilter::default(),
+        ConsoleLogger::new_unchecked("debug"),
+    ));
     let destination_stream =
-        net::TcpStream::connect(*CONNECT_TO_ADDR).expect("cannot connect to destination address");
-    destination_stream
-        .set_nonblocking(NONBLOCKING)
-        .expect(SET_NONBLOCKING_ERROR);
-    let destination_stream = sync::Arc::new(sync::Mutex::new(destination_stream));
+        tokio_net::TcpStream::connect(*CONNECT_TO_ADDR).await.expect("Failed to connect to destination address");
+    let (mut destination_stream_read_half, mut destination_stream_write_half) = io::split(LoggedStream::new(
+        destination_stream,
+        HexDecimalFormatter::new(None),
+        RecordKindFilter::new(&[RecordKind::Drop, RecordKind::Error, RecordKind::Shutdown]),
+        ConsoleLogger::new_unchecked("debug"),
+    ));
 
-    let cloned_source_stream = sync::Arc::clone(&source_stream);
-    let cloned_destination_stream = sync::Arc::clone(&destination_stream);
-
-    drop(thread::spawn(move || {
-        let mut buffer = [0; 2048];
-
-        'source_stream_handle: loop {
-            let read_length = match source_stream
-                .lock()
-                .expect(POISONED_MUTEX_ERROR)
-                .read(&mut buffer)
-            {
-                Ok(read_length) if read_length == 0 => continue 'source_stream_handle,
-                Ok(read_length) => read_length,
-                Err(error) if matches!(error.kind(), io::ErrorKind::WouldBlock) => {
-                    continue 'source_stream_handle
-                }
-                Err(error) => panic!("Failed to read from {} due to {:?}", source_addr, error),
-            };
-
-            let write_length = match destination_stream
-                .lock()
-                .expect(POISONED_MUTEX_ERROR)
-                .write(&buffer[0..read_length])
-            {
-                Ok(write_length) => write_length,
-                Err(error) => panic!(
-                    "Failed to write into {} due to {:?}",
-                    *CONNECT_TO_ADDR, error
-                ),
-            };
-
-            assert_eq!(read_length, write_length);
-
-            let hexlified_source_data = hexlify(&buffer, write_length);
-            println!("S > D {}", hexlified_source_data);
-
-            clean_buffer(&mut buffer, write_length);
-        }
-    }));
-
-    drop(thread::spawn(move || {
-        let mut buffer = [0; 2048];
-
+    let destination_stream_handle = tokio::spawn(async move {
+        let mut buffer = BytesMut::with_capacity(2048);
         'destination_stream_handle: loop {
-            let read_length = match cloned_destination_stream
-                .lock()
-                .expect(POISONED_MUTEX_ERROR)
-                .read(&mut buffer)
-            {
-                Ok(read_length) if read_length == 0 => continue 'destination_stream_handle,
-                Ok(read_length) => read_length,
-                Err(error) if matches!(error.kind(), io::ErrorKind::WouldBlock) => {
-                    continue 'destination_stream_handle
-                }
-                Err(error) => panic!(
-                    "Failed to read from {} due to {:?}",
-                    *CONNECT_TO_ADDR, error
-                ),
+            let Ok(read_length) = destination_stream_read_half.read_buf(&mut buffer).await else { 
+                break 'destination_stream_handle;
+             };
+            if read_length == 0 {
+                continue 'destination_stream_handle;
+            }
+            let Ok(write_length) = source_stream_write_half.write(&buffer[0..read_length]).await else {
+                break 'destination_stream_handle;
             };
-
-            let write_length = match cloned_source_stream
-                .lock()
-                .expect(POISONED_MUTEX_ERROR)
-                .write(&buffer[0..read_length])
-            {
-                Ok(write_length) => write_length,
-                Err(error) => panic!("Failed to write into {} due to {:?}", source_addr, error),
-            };
-
             assert_eq!(read_length, write_length);
-
-            let hexlified_destination_data = hexlify(&buffer, write_length);
-            println!("D > S {}", hexlified_destination_data);
-
-            clean_buffer(&mut buffer, write_length);
+            buffer.clear();
         }
-    }))
+    });
+
+    tokio::spawn(async move {
+        let mut buffer = BytesMut::with_capacity(2048);
+        'source_stream_handle: loop {
+            let Ok(Ok(read_length)) = timeout(Duration::from_secs(SOURCE_STREAM_READ_TIMEOUT_SECS), source_stream_read_half.read_buf(&mut buffer)).await else {
+                destination_stream_handle.abort();
+                break 'source_stream_handle;
+            };
+            if read_length == 0 { continue 'source_stream_handle; }
+            let Ok(write_length) = destination_stream_write_half.write(&buffer[0..read_length]).await else {
+                break 'source_stream_handle;    
+            };
+            assert_eq!(read_length, write_length);
+            buffer.clear();
+        }
+    });
 }
 
-fn hexlify(buffer: &[u8], length: usize) -> String {
-    let hexlified_data = (&buffer[0..length])
-        .iter()
-        .map(|b| format!("{:02x}", b))
-        .collect::<Vec<String>>()
-        .join(":");
+#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
+async fn main() {
+    env::set_var("RUST_LOG", "debug");
+    env_logger::init();
 
-    format!("{} (length - {})", hexlified_data, length)
-}
+    let listener = tokio_net::TcpListener::bind(*LISTEN_ADDR).await.expect("Failed to bind tcp listener");
 
-fn clean_buffer(buffer: &mut [u8], length: usize) {
-    for b in buffer.iter_mut().take(length) {
-        *b = 0_u8;
-    }
-}
+    log::debug!("Listener binded, waiting for incoming connections...");
 
-fn main() {
-    let listener = net::TcpListener::bind(*LISTEN_ADDR).expect("failed to bind tcp listener");
-
-    'incoming: for maybe_stream in listener.incoming() {
-        match maybe_stream {
-            Err(error) => eprintln!("Failed to accept incoming connection due to {:?}", error),
-            Ok(source_stream) => {
-                let source_addr = match source_stream.peer_addr() {
-                    Ok(source_addr) => source_addr,
-                    Err(error) => {
-                        eprintln!("Failed to receive peer address due to {:?}", error);
-                        continue 'incoming;
-                    }
-                };
-                println!("Incoming connection from {}", source_addr);
-                incoming_connection_handle(source_stream, source_addr);
+    loop {
+        let accept = listener.accept().await;
+        match accept {
+            Ok((stream, addr)) => {
+                log::debug!("Incoming connection from {addr}");
+                tokio::spawn(incoming_connection_handle(stream));
+            }
+            Err(e) => {
+                log::error!("Failed to accept incoming connection due to {e}");
             }
         }
     }
