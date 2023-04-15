@@ -1,16 +1,16 @@
+use bytes::BytesMut;
+use logged_stream::ConsoleLogger;
 use logged_stream::DefaultFilter;
+use logged_stream::HexDecimalFormatter;
+use logged_stream::LoggedStream;
 use logged_stream::RecordKind;
+use logged_stream::RecordKindFilter;
+use std::env;
+use std::net;
+use std::time::Duration;
 use tokio::io::{self, AsyncReadExt, AsyncWriteExt};
 use tokio::net as tokio_net;
 use tokio::time::timeout;
-use std::net;
-use std::env;
-use std::time::Duration;
-use logged_stream::LoggedStream;
-use logged_stream::HexDecimalFormatter;
-use logged_stream::ConsoleLogger;
-use logged_stream::RecordKindFilter;
-use bytes::BytesMut;
 
 lazy_static::lazy_static! {
     static ref LISTEN_ADDR: net::SocketAddr = net::SocketAddr::new(
@@ -30,21 +30,25 @@ async fn incoming_connection_handle(source_stream: tokio_net::TcpStream) {
         DefaultFilter::default(),
         ConsoleLogger::new_unchecked("debug"),
     ));
-    let destination_stream =
-        tokio_net::TcpStream::connect(*CONNECT_TO_ADDR).await.expect("Failed to connect to destination address");
-    let (mut destination_stream_read_half, mut destination_stream_write_half) = io::split(LoggedStream::new(
-        destination_stream,
-        HexDecimalFormatter::new(None),
-        RecordKindFilter::new(&[RecordKind::Drop, RecordKind::Error, RecordKind::Shutdown]),
-        ConsoleLogger::new_unchecked("debug"),
-    ));
+    let destination_stream = tokio_net::TcpStream::connect(*CONNECT_TO_ADDR)
+        .await
+        .expect("Failed to connect to destination address");
+    let (mut destination_stream_read_half, mut destination_stream_write_half) =
+        io::split(LoggedStream::new(
+            destination_stream,
+            HexDecimalFormatter::new(None),
+            RecordKindFilter::new(&[RecordKind::Drop, RecordKind::Error, RecordKind::Shutdown]),
+            ConsoleLogger::new_unchecked("debug"),
+        ));
 
+    // TODO_FUTURE: looks like rustfmt currently does not support let-else syntax, remove skip attribute later
+    #[rustfmt::skip]
     let destination_stream_handle = tokio::spawn(async move {
         let mut buffer = BytesMut::with_capacity(2048);
         'destination_stream_handle: loop {
             let Ok(read_length) = destination_stream_read_half.read_buf(&mut buffer).await else { 
                 break 'destination_stream_handle;
-             };
+            };
             if read_length == 0 {
                 continue 'destination_stream_handle;
             }
@@ -56,14 +60,20 @@ async fn incoming_connection_handle(source_stream: tokio_net::TcpStream) {
         }
     });
 
+    #[rustfmt::skip]
     tokio::spawn(async move {
         let mut buffer = BytesMut::with_capacity(2048);
         'source_stream_handle: loop {
-            let Ok(Ok(read_length)) = timeout(Duration::from_secs(SOURCE_STREAM_READ_TIMEOUT_SECS), source_stream_read_half.read_buf(&mut buffer)).await else {
+            let Ok(Ok(read_length)) = timeout(
+                Duration::from_secs(SOURCE_STREAM_READ_TIMEOUT_SECS),
+                source_stream_read_half.read_buf(&mut buffer)
+            ).await else {
                 destination_stream_handle.abort();
                 break 'source_stream_handle;
             };
-            if read_length == 0 { continue 'source_stream_handle; }
+            if read_length == 0 {
+                continue 'source_stream_handle;
+            }
             let Ok(write_length) = destination_stream_write_half.write(&buffer[0..read_length]).await else {
                 break 'source_stream_handle;    
             };
@@ -78,7 +88,9 @@ async fn main() {
     env::set_var("RUST_LOG", "debug");
     env_logger::init();
 
-    let listener = tokio_net::TcpListener::bind(*LISTEN_ADDR).await.expect("Failed to bind tcp listener");
+    let listener = tokio_net::TcpListener::bind(*LISTEN_ADDR)
+        .await
+        .expect("Failed to bind tcp listener");
 
     log::debug!("Listener binded, waiting for incoming connections...");
 
