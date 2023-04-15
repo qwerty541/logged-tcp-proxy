@@ -10,4 +10,10 @@ env_logger = "0.10.0"
 lazy_static = "1.4.0"
 logged-stream = "0.2.0"
 log = "0.4.17"
-tokio = { version = "1.27.0", features = ["io-util", "macros", "net", "rt-multi-thread", "time"], default-features = false }
+tokio = { version = "1.27.0", features = [
+    "io-util",
+    "macros",
+    "net",
+    "rt-multi-thread",
+    "time"
+], default-features = false }
