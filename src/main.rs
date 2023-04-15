@@ -75,6 +75,7 @@ async fn incoming_connection_handle(source_stream: tokio_net::TcpStream) {
                 continue 'source_stream_handle;
             }
             let Ok(write_length) = destination_stream_write_half.write(&buffer[0..read_length]).await else {
+                destination_stream_handle.abort();
                 break 'source_stream_handle;    
             };
             assert_eq!(read_length, write_length);
