@@ -17,7 +17,7 @@ use tokio::time::timeout;
 #[command(next_line_help = true)]
 #[command(author, version, about, long_about = None)]
 struct Arguments {
-    /// Logging level of read/write operations.
+    /// Application logging level.
     #[arg(short, long, default_value = "debug")]
     level: String,
     /// Address on which TCP listener should be binded.
