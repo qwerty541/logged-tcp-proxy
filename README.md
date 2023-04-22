@@ -18,7 +18,7 @@ This repository provides a command line utility that allows you to proxy TCP con
 To use `logged-tcp-proxy`, at first clone project using the following command:
 
 ```sh
-$ git@github.com:qwerty541/logged-tcp-proxy.git
+$ git clone git@github.com:qwerty541/logged-tcp-proxy.git
 ```
 
 Than you need to compile crate by running the following command in project directory:
