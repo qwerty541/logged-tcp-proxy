@@ -7,7 +7,7 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 bytes = "1.4.0"
-clap = { version = "4.2.2", features = ["std", "derive"] }
+clap = { version = "4.2.4", features = ["std", "derive"] }
 env_logger = "0.10.0"
 logged-stream = "0.2.2"
 log = "0.4.17"
