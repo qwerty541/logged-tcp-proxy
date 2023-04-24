@@ -30,7 +30,7 @@ $ cargo build
 Now you can run compiled binary:
 
 ```sh
-./target/debug/logged_tcp_proxy -l debug -b 127.0.0.1:20502 -r 127.0.0.1:20582
+$ ./target/debug/logged_tcp_proxy -l debug -b 127.0.0.1:20502 -r 127.0.0.1:20582
 ```
 
 ## Options
