@@ -25,7 +25,7 @@ jobs:
                   echo "Deleting caches..."
                   for cacheKey in $cacheKeysForMasterBranch
                   do
-                      if [[ ! $cacheKey =~ Linux-(stable|beta|nightly)-${{ hashFiles('Cargo.toml') }} ]];
+                      if [[ ! $cacheKey =~ Linux-(stable|beta|nightly)-${{ hashFiles('Cargo.lock') }} ]];
                         then gh actions-cache delete $cacheKey -R $REPO -B "master" --confirm;
                       fi
                   done
