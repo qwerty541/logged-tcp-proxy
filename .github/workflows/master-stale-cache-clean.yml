@@ -1,0 +1,34 @@
+name: master stale cache clean
+on:
+    push:
+        branches:
+            - master
+
+jobs:
+    cleanup:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v3
+
+            - name: Cleanup
+              run: |
+                  gh extension install actions/gh-actions-cache
+
+                  REPO=${{ github.repository }}
+
+                  echo "Fetching list of cache key"
+                  cacheKeysForMasterBranch=$(gh actions-cache list -R $REPO -B "master" | cut -f 1 )
+
+                  ## Setting this to not fail the workflow while deleting cache keys. 
+                  set +e
+                  echo "Deleting caches..."
+                  for cacheKey in $cacheKeysForMasterBranch
+                  do
+                      if [[ ! $cacheKey =~ Linux-(stable|beta|nightly)-${{ hashFiles('Cargo.toml') }} ]];
+                        then gh actions-cache delete $cacheKey -R $REPO -B "master" --confirm;
+                      fi
+                  done
+                  echo "Done"
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
