@@ -392,9 +392,9 @@ dependencies = [
 
 [[package]]
 name = "logged-stream"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32b00606e3034f8cd0a5034262d0f1e7cbc2c7b0985a43d7d837c9eeea8bfd46"
+checksum = "decad5d41393470136456eaa6d4b61692966e90b383c2af32e29d964b226770b"
 dependencies = [
  "chrono",
  "itertools",
