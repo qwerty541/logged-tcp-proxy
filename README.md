@@ -11,7 +11,7 @@
 
 ## Description
 
-This repository provides a command line utility that allows you to proxy TCP connections with payload output to the console.
+This repository provides a command line utility that allows you to proxy TCP connections with payload output to the console. Payload output can be formatted in different ways: hexdecimal, decimal, octal and binary.
 
 ## Usage
 
