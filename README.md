@@ -51,6 +51,8 @@ Options:
           Address of remote server
   -t, --timeout <TIMEOUT>
           Incoming connection reading timeout [default: 60]
+  -f, --formatting <FORMATTING>
+          Formatting of console payload output, [default: hexdecimal] [possible values: decimal, hexdecimal, binary, octal]
   -h, --help
           Print help
   -V, --version
