@@ -1,17 +1,79 @@
 use bytes::BytesMut;
+use clap::builder::PossibleValue;
 use clap::Parser;
+use clap::ValueEnum;
+use logged_stream::BinaryFormatter;
+use logged_stream::BufferFormatter;
 use logged_stream::ConsoleLogger;
+use logged_stream::DecimalFormatter;
 use logged_stream::DefaultFilter;
 use logged_stream::HexDecimalFormatter;
 use logged_stream::LoggedStream;
+use logged_stream::OctalFormatter;
 use logged_stream::RecordKind;
 use logged_stream::RecordKindFilter;
 use std::env;
+use std::fmt;
 use std::net;
+use std::str::FromStr;
 use std::time::Duration;
 use tokio::io::{self, AsyncReadExt, AsyncWriteExt};
 use tokio::net as tokio_net;
 use tokio::time::timeout;
+
+#[derive(Debug, Clone, Copy)]
+enum PayloadFormatingKind {
+    Decimal,
+    Hexdecimal,
+    Binary,
+    Octal,
+}
+
+impl ValueEnum for PayloadFormatingKind {
+    fn value_variants<'a>() -> &'a [Self] {
+        &[Self::Decimal, Self::Hexdecimal, Self::Binary, Self::Octal]
+    }
+
+    fn to_possible_value(&self) -> Option<PossibleValue> {
+        Some(match self {
+            Self::Decimal => PossibleValue::new("decimal"),
+            Self::Hexdecimal => PossibleValue::new("hexdecimal"),
+            Self::Binary => PossibleValue::new("binary"),
+            Self::Octal => PossibleValue::new("octal"),
+        })
+    }
+}
+
+impl FromStr for PayloadFormatingKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        for variant in Self::value_variants() {
+            if variant.to_possible_value().unwrap().matches(s, false) {
+                return Ok(*variant);
+            }
+        }
+        Err(format!("Invalid variant: {}", s))
+    }
+}
+
+impl fmt::Display for PayloadFormatingKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.to_possible_value()
+            .expect("no values are skipped")
+            .get_name()
+            .fmt(f)
+    }
+}
+
+fn get_formatter_by_kind(kind: PayloadFormatingKind) -> Box<dyn BufferFormatter> {
+    match kind {
+        PayloadFormatingKind::Decimal => Box::new(DecimalFormatter::new(None)),
+        PayloadFormatingKind::Hexdecimal => Box::new(HexDecimalFormatter::new(None)),
+        PayloadFormatingKind::Binary => Box::new(BinaryFormatter::new(None)),
+        PayloadFormatingKind::Octal => Box::new(OctalFormatter::new(None)),
+    }
+}
 
 #[derive(Debug, Clone, Parser)]
 #[command(next_line_help = true)]
@@ -29,12 +91,15 @@ struct Arguments {
     /// Incoming connection reading timeout.
     #[arg(short, long, default_value = "60")]
     timeout: u64,
+    /// Formatting of console payload output,
+    #[arg(short, long, default_value = "hexdecimal")]
+    formatting: PayloadFormatingKind,
 }
 
 async fn incoming_connection_handle(arguments: Arguments, source_stream: tokio_net::TcpStream) {
     let (mut source_stream_read_half, mut source_stream_write_half) = io::split(LoggedStream::new(
         source_stream,
-        HexDecimalFormatter::new(None),
+        get_formatter_by_kind(arguments.formatting),
         DefaultFilter::default(),
         ConsoleLogger::new_unchecked("debug"),
     ));
@@ -44,7 +109,7 @@ async fn incoming_connection_handle(arguments: Arguments, source_stream: tokio_n
     let (mut destination_stream_read_half, mut destination_stream_write_half) =
         io::split(LoggedStream::new(
             destination_stream,
-            HexDecimalFormatter::new(None),
+            get_formatter_by_kind(arguments.formatting),
             RecordKindFilter::new(&[RecordKind::Drop, RecordKind::Error, RecordKind::Shutdown]),
             ConsoleLogger::new_unchecked("debug"),
         ));
