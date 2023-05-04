@@ -16,10 +16,67 @@ use std::env;
 use std::fmt;
 use std::net;
 use std::str::FromStr;
+use std::string::ToString;
 use std::time::Duration;
 use tokio::io::{self, AsyncReadExt, AsyncWriteExt};
 use tokio::net as tokio_net;
 use tokio::time::timeout;
+
+#[derive(Debug, Clone, Copy)]
+enum LoggingLevel {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+    Off,
+}
+
+impl ValueEnum for LoggingLevel {
+    fn value_variants<'a>() -> &'a [Self] {
+        &[
+            Self::Trace,
+            Self::Debug,
+            Self::Info,
+            Self::Warn,
+            Self::Error,
+            Self::Off,
+        ]
+    }
+
+    fn to_possible_value(&self) -> Option<PossibleValue> {
+        Some(match self {
+            Self::Trace => PossibleValue::new("trace"),
+            Self::Debug => PossibleValue::new("debug"),
+            Self::Info => PossibleValue::new("info"),
+            Self::Warn => PossibleValue::new("warn"),
+            Self::Error => PossibleValue::new("error"),
+            Self::Off => PossibleValue::new("off"),
+        })
+    }
+}
+
+impl FromStr for LoggingLevel {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        for variant in Self::value_variants() {
+            if variant.to_possible_value().unwrap().matches(s, false) {
+                return Ok(*variant);
+            }
+        }
+        Err(format!("Invalid variant: {}", s))
+    }
+}
+
+impl fmt::Display for LoggingLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.to_possible_value()
+            .expect("no values are skipped")
+            .get_name()
+            .fmt(f)
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 enum PayloadFormatingKind {
@@ -81,7 +138,7 @@ fn get_formatter_by_kind(kind: PayloadFormatingKind) -> Box<dyn BufferFormatter>
 struct Arguments {
     /// Application logging level.
     #[arg(short, long, default_value = "debug")]
-    level: String,
+    level: LoggingLevel,
     /// Address on which TCP listener should be binded.
     #[arg(short, long)]
     bind_listener_addr: net::SocketAddr,
@@ -161,7 +218,7 @@ async fn incoming_connection_handle(arguments: Arguments, source_stream: tokio_n
 async fn main() {
     let arguments = Arguments::parse();
 
-    env::set_var("RUST_LOG", arguments.level.clone());
+    env::set_var("RUST_LOG", arguments.level.to_string());
     env_logger::init();
 
     let listener = tokio_net::TcpListener::bind(arguments.bind_listener_addr)

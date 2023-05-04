@@ -44,7 +44,7 @@ Usage: logged_tcp_proxy [OPTIONS] --bind-listener-addr <BIND_LISTENER_ADDR> --re
 
 Options:
   -l, --level <LEVEL>
-          Application logging level [default: debug]
+          Application logging level [default: debug] [possible values: trace, debug, info, warn, error, off]
   -b, --bind-listener-addr <BIND_LISTENER_ADDR>
           Address on which TCP listener should be binded
   -r, --remote-addr <REMOTE_ADDR>
