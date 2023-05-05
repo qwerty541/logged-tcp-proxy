@@ -6,6 +6,7 @@ authors = ["Alexandr Garbuzov <qwerty541zxc@gmail.com>"]
 description = "Command line interface for proxying TCP connections with payload output into console which can be formatted different ways."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/qwerty541/logged-tcp-proxy"
+exclude = [".github", ".vscode", ".gitignore"]
 
 [dependencies]
 bytes = "1.4.0"
