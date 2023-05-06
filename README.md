@@ -3,7 +3,7 @@
 ## Table of contents
 
 -   [Description](#description)
--   [Usage](#usage)
+-   [Installation](#installation)
 -   [Options](#options)
 -   [Example](#example)
 -   [License](#license)
@@ -13,9 +13,25 @@
 
 This repository provides a command line interface for proxying TCP connections with payload output into the console. Payload output can be formatted in different ways: hexdecimal, decimal, octal and binary.
 
-## Usage
+## Installation
 
-To use `logged-tcp-proxy`, at first clone project using the following command:
+### From crates.io
+
+Run the following command and wait until the crate is compiled:
+
+```sh
+$ cargo install logged_tcp_proxy
+```
+
+Now you can run compiled binary:
+
+```sh
+$ logged_tcp_proxy -b 127.0.0.1:20502 -r 127.0.0.1:20582
+```
+
+### From git repository
+
+At first clone project using the following command:
 
 ```sh
 $ git clone git@github.com:qwerty541/logged-tcp-proxy.git
