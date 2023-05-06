@@ -13,6 +13,7 @@ categories = [
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/qwerty541/logged-tcp-proxy"
 homepage = "https://github.com/qwerty541/logged-tcp-proxy"
+readme = "./README.md"
 exclude = [".github", ".vscode", ".gitignore"]
 
 [dependencies]
