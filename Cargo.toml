@@ -5,6 +5,11 @@ edition = "2021"
 authors = ["Alexandr Garbuzov <qwerty541zxc@gmail.com>"]
 description = "Command line interface for proxying TCP connections with payload output into console which can be formatted different ways."
 keywords = ["network", "tcp", "proxy", "logging", "debugging"]
+categories = [
+    "command-line-utilities",
+    "development-tools::debugging",
+    "network-programming"
+]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/qwerty541/logged-tcp-proxy"
 exclude = [".github", ".vscode", ".gitignore"]
