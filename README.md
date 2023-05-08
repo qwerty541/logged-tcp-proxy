@@ -1,5 +1,15 @@
 # logged-tcp-proxy
 
+[![Crates.io][crates-badge]][crates-url]
+![License][license-badge]
+[![Workflow Status][workflow-badge]][actions-url]
+
+[crates-badge]: https://img.shields.io/crates/v/logged_tcp_proxy.svg
+[crates-url]: https://crates.io/crates/logged_tcp_proxy
+[license-badge]: https://img.shields.io/crates/l/logged_tcp_proxy.svg
+[workflow-badge]: https://github.com/qwerty541/logged-tcp-proxy/workflows/check/badge.svg
+[actions-url]: https://github.com/qwerty541/logged-tcp-proxy/actions
+
 ## Table of contents
 
 -   [Description](#description)
