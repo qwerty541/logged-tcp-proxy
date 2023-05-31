@@ -4,8 +4,9 @@ use clap::ValueEnum;
 use logged_stream::BinaryFormatter;
 use logged_stream::BufferFormatter;
 use logged_stream::DecimalFormatter;
-use logged_stream::HexDecimalFormatter;
+use logged_stream::LowercaseHexadecimalFormatter;
 use logged_stream::OctalFormatter;
+use logged_stream::UppercaseHexadecimalFormatter;
 use std::fmt;
 use std::net;
 use std::str::FromStr;
@@ -69,20 +70,28 @@ impl fmt::Display for LoggingLevel {
 #[derive(Debug, Clone, Copy)]
 pub enum PayloadFormatingKind {
     Decimal,
-    Hexdecimal,
+    LowerHex,
+    UpperHex,
     Binary,
     Octal,
 }
 
 impl ValueEnum for PayloadFormatingKind {
     fn value_variants<'a>() -> &'a [Self] {
-        &[Self::Decimal, Self::Hexdecimal, Self::Binary, Self::Octal]
+        &[
+            Self::Decimal,
+            Self::LowerHex,
+            Self::UpperHex,
+            Self::Binary,
+            Self::Octal,
+        ]
     }
 
     fn to_possible_value(&self) -> Option<PossibleValue> {
         Some(match self {
             Self::Decimal => PossibleValue::new("decimal"),
-            Self::Hexdecimal => PossibleValue::new("hexdecimal"),
+            Self::LowerHex => PossibleValue::new("lowerhex"),
+            Self::UpperHex => PossibleValue::new("upperhex"),
             Self::Binary => PossibleValue::new("binary"),
             Self::Octal => PossibleValue::new("octal"),
         })
@@ -114,7 +123,8 @@ impl fmt::Display for PayloadFormatingKind {
 pub fn get_formatter_by_kind(kind: PayloadFormatingKind) -> Box<dyn BufferFormatter> {
     match kind {
         PayloadFormatingKind::Decimal => Box::new(DecimalFormatter::new(None)),
-        PayloadFormatingKind::Hexdecimal => Box::new(HexDecimalFormatter::new(None)),
+        PayloadFormatingKind::LowerHex => Box::new(LowercaseHexadecimalFormatter::new(None)),
+        PayloadFormatingKind::UpperHex => Box::new(UppercaseHexadecimalFormatter::new(None)),
         PayloadFormatingKind::Binary => Box::new(BinaryFormatter::new(None)),
         PayloadFormatingKind::Octal => Box::new(OctalFormatter::new(None)),
     }
@@ -137,6 +147,6 @@ pub struct Arguments {
     #[arg(short, long, default_value = "60")]
     pub timeout: u64,
     /// Formatting of console payload output,
-    #[arg(short, long, default_value = "hexdecimal")]
+    #[arg(short, long, default_value = "lowerhex")]
     pub formatting: PayloadFormatingKind,
 }

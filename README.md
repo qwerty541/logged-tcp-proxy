@@ -21,7 +21,7 @@
 
 ## Description
 
-This repository provides a command line interface for proxying TCP connections with payload output into the console. Payload output can be formatted in different ways: hexdecimal, decimal, octal and binary.
+This repository provides a command line interface for proxying TCP connections with payload output into the console. Payload output can be formatted in different ways: hexadecimal (lowercase and uppercase), decimal, octal and binary.
 
 ## Installation
 
@@ -78,7 +78,7 @@ Options:
   -t, --timeout <TIMEOUT>
           Incoming connection reading timeout [default: 60]
   -f, --formatting <FORMATTING>
-          Formatting of console payload output, [default: hexdecimal] [possible values: decimal, hexdecimal, binary, octal]
+          Formatting of console payload output, [default: lowerhex] [possible values: decimal, lowerhex, upperhex, binary, octal]
   -h, --help
           Print help
   -V, --version

@@ -20,7 +20,7 @@ exclude = [".github", ".vscode", ".gitignore"]
 bytes = "1.4.0"
 clap = { version = "4.2.5", features = ["std", "derive"] }
 env_logger = "0.10.0"
-logged-stream = "0.2.5"
+logged-stream = "0.3.0"
 log = "0.4.17"
 tokio = { version = "1.27.0", features = [
     "io-util",
