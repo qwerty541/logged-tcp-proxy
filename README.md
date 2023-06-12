@@ -1,4 +1,4 @@
-# logged-tcp-proxy
+# logged-tcp-proxy <!-- omit from toc -->
 
 [![Crates.io][crates-badge]][crates-url]
 ![License][license-badge]
@@ -10,14 +10,16 @@
 [workflow-badge]: https://github.com/qwerty541/logged-tcp-proxy/workflows/check/badge.svg
 [actions-url]: https://github.com/qwerty541/logged-tcp-proxy/actions
 
-## Table of contents
+## Table of contents <!-- omit from toc -->
 
--   [Description](#description)
--   [Installation](#installation)
--   [Options](#options)
--   [Example](#example)
--   [License](#license)
--   [Contribution](#contribution)
+- [Description](#description)
+- [Installation](#installation)
+  - [From crates.io](#from-cratesio)
+  - [From git repository](#from-git-repository)
+- [Options](#options)
+- [Example](#example)
+- [License](#license)
+- [Contribution](#contribution)
 
 ## Description
 
