@@ -120,13 +120,20 @@ impl fmt::Display for PayloadFormatingKind {
     }
 }
 
-pub fn get_formatter_by_kind(kind: PayloadFormatingKind) -> Box<dyn BufferFormatter> {
+pub fn get_formatter_by_kind(
+    kind: PayloadFormatingKind,
+    separator: &str,
+) -> Box<dyn BufferFormatter> {
     match kind {
-        PayloadFormatingKind::Decimal => Box::new(DecimalFormatter::new(None)),
-        PayloadFormatingKind::LowerHex => Box::new(LowercaseHexadecimalFormatter::new(None)),
-        PayloadFormatingKind::UpperHex => Box::new(UppercaseHexadecimalFormatter::new(None)),
-        PayloadFormatingKind::Binary => Box::new(BinaryFormatter::new(None)),
-        PayloadFormatingKind::Octal => Box::new(OctalFormatter::new(None)),
+        PayloadFormatingKind::Decimal => Box::new(DecimalFormatter::new(Some(separator))),
+        PayloadFormatingKind::LowerHex => {
+            Box::new(LowercaseHexadecimalFormatter::new(Some(separator)))
+        }
+        PayloadFormatingKind::UpperHex => {
+            Box::new(UppercaseHexadecimalFormatter::new(Some(separator)))
+        }
+        PayloadFormatingKind::Binary => Box::new(BinaryFormatter::new(Some(separator))),
+        PayloadFormatingKind::Octal => Box::new(OctalFormatter::new(Some(separator))),
     }
 }
 
@@ -149,4 +156,7 @@ pub struct Arguments {
     /// Formatting of console payload output,
     #[arg(short, long, default_value = "lowerhex")]
     pub formatting: PayloadFormatingKind,
+    /// Console payload output bytes separator.
+    #[arg(short, long, default_value = ":")]
+    pub separator: String,
 }

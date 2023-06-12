@@ -36,7 +36,7 @@ pub async fn initialize_tcp_listener(arguments: Arguments) {
 async fn incoming_connection_handle(arguments: Arguments, source_stream: tokio_net::TcpStream) {
     let (mut source_stream_read_half, mut source_stream_write_half) = io::split(LoggedStream::new(
         source_stream,
-        get_formatter_by_kind(arguments.formatting),
+        get_formatter_by_kind(arguments.formatting, arguments.separator.as_str()),
         DefaultFilter::default(),
         ConsoleLogger::new_unchecked("debug"),
     ));
@@ -46,7 +46,7 @@ async fn incoming_connection_handle(arguments: Arguments, source_stream: tokio_n
     let (mut destination_stream_read_half, mut destination_stream_write_half) =
         io::split(LoggedStream::new(
             destination_stream,
-            get_formatter_by_kind(arguments.formatting),
+            get_formatter_by_kind(arguments.formatting, arguments.separator.as_str()),
             RecordKindFilter::new(&[RecordKind::Drop, RecordKind::Error, RecordKind::Shutdown]),
             ConsoleLogger::new_unchecked("debug"),
         ));
