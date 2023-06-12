@@ -9,7 +9,11 @@ async fn main() {
     let arguments = Arguments::parse();
 
     env::set_var("RUST_LOG", arguments.level.to_string());
-    env_logger::init();
+    env_logger::builder()
+        .parse_default_env()
+        .format_target(false)
+        .format_module_path(false)
+        .init();
 
     initialize_tcp_listener(arguments).await;
 }
