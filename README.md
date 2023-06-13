@@ -83,6 +83,8 @@ Options:
           Incoming connection reading timeout [default: 60]
   -f, --formatting <FORMATTING>
           Formatting of console payload output, [default: lowerhex] [possible values: decimal, lowerhex, upperhex, binary, octal]
+  -s, --separator <SEPARATOR>
+          Console payload output bytes separator [default: :]
   -h, --help
           Print help
   -V, --version
