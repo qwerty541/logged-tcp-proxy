@@ -1,12 +1,14 @@
 use clap::builder::PossibleValue;
 use clap::Parser;
 use clap::ValueEnum;
+use env_logger::TimestampPrecision as EnvLoggerTimestampPrecision;
 use logged_stream::BinaryFormatter;
 use logged_stream::BufferFormatter;
 use logged_stream::DecimalFormatter;
 use logged_stream::LowercaseHexadecimalFormatter;
 use logged_stream::OctalFormatter;
 use logged_stream::UppercaseHexadecimalFormatter;
+use std::convert::From;
 use std::fmt;
 use std::net;
 use std::str::FromStr;
@@ -137,6 +139,67 @@ pub fn get_formatter_by_kind(
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum TimestampPrecision {
+    Seconds,
+    Milliseconds,
+    Microseconds,
+    Nanoseconds,
+}
+
+impl ValueEnum for TimestampPrecision {
+    fn value_variants<'a>() -> &'a [Self] {
+        &[
+            Self::Seconds,
+            Self::Milliseconds,
+            Self::Microseconds,
+            Self::Nanoseconds,
+        ]
+    }
+
+    fn to_possible_value(&self) -> Option<PossibleValue> {
+        Some(match self {
+            Self::Seconds => PossibleValue::new("seconds"),
+            Self::Milliseconds => PossibleValue::new("milliseconds"),
+            Self::Microseconds => PossibleValue::new("microseconds"),
+            Self::Nanoseconds => PossibleValue::new("nanoseconds"),
+        })
+    }
+}
+
+impl FromStr for TimestampPrecision {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        for variant in Self::value_variants() {
+            if variant.to_possible_value().unwrap().matches(s, false) {
+                return Ok(*variant);
+            }
+        }
+        Err(format!("Invalid variant: {}", s))
+    }
+}
+
+impl fmt::Display for TimestampPrecision {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.to_possible_value()
+            .expect("no values are skipped")
+            .get_name()
+            .fmt(f)
+    }
+}
+
+impl From<TimestampPrecision> for EnvLoggerTimestampPrecision {
+    fn from(precision: TimestampPrecision) -> Self {
+        match precision {
+            TimestampPrecision::Seconds => EnvLoggerTimestampPrecision::Seconds,
+            TimestampPrecision::Milliseconds => EnvLoggerTimestampPrecision::Millis,
+            TimestampPrecision::Microseconds => EnvLoggerTimestampPrecision::Micros,
+            TimestampPrecision::Nanoseconds => EnvLoggerTimestampPrecision::Nanos,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Parser)]
 #[command(next_line_help = true)]
 #[command(author, version, about, long_about = None)]
@@ -159,4 +222,7 @@ pub struct Arguments {
     /// Console payload output bytes separator.
     #[arg(short, long, default_value = ":")]
     pub separator: String,
+    /// Timestamp precision.
+    #[arg(short, long, default_value = "seconds")]
+    pub precision: TimestampPrecision,
 }

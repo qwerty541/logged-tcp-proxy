@@ -1,6 +1,7 @@
 use clap::Parser;
 use logged_tcp_proxy::initialize_tcp_listener;
 use logged_tcp_proxy::Arguments;
+use std::convert::From;
 use std::env;
 use std::string::ToString;
 
@@ -13,6 +14,7 @@ async fn main() {
         .parse_default_env()
         .format_target(false)
         .format_module_path(false)
+        .format_timestamp(Some(arguments.precision).map(From::from))
         .init();
 
     initialize_tcp_listener(arguments).await;
