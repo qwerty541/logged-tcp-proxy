@@ -85,6 +85,8 @@ Options:
           Formatting of console payload output, [default: lowerhex] [possible values: decimal, lowerhex, upperhex, binary, octal]
   -s, --separator <SEPARATOR>
           Console payload output bytes separator [default: :]
+  -p, --precision <PRECISION>
+          Timestamp precision [default: seconds] [possible values: seconds, milliseconds, microseconds, nanoseconds]
   -h, --help
           Print help
   -V, --version
