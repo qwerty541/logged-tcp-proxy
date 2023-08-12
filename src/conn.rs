@@ -37,7 +37,7 @@ async fn incoming_connection_handle(arguments: Arguments, source_stream: tokio_n
     let (mut source_stream_read_half, mut source_stream_write_half) = io::split(LoggedStream::new(
         source_stream,
         get_formatter_by_kind(arguments.formatting, arguments.separator.as_str()),
-        DefaultFilter::default(),
+        DefaultFilter,
         ConsoleLogger::new_unchecked("debug"),
     ));
     let destination_stream = tokio_net::TcpStream::connect(arguments.remote_addr)
