@@ -16,7 +16,7 @@
 
 - [Description](#description)
 - [Installation](#installation)
-  - [From crates.io](#from-cratesio)
+  - [From crates.io (Recommended)](#from-cratesio-recommended)
   - [From git repository](#from-git-repository)
 - [Options](#options)
 - [Example](#example)
@@ -29,7 +29,7 @@ This repository provides a command line interface for proxying TCP connections w
 
 ## Installation
 
-### From crates.io
+### From crates.io (Recommended)
 
 Run the following command and wait until the crate is compiled:
 
