@@ -69,6 +69,7 @@ Below is a list of currently supported options.
 
 ```
 $ logged_tcp_proxy --help
+Command line interface for proxying TCP connections with payload output into console which can be formatted different ways.
 
 Usage: logged_tcp_proxy [OPTIONS] --bind-listener-addr <BIND_LISTENER_ADDR> --remote-addr <REMOTE_ADDR>
 
