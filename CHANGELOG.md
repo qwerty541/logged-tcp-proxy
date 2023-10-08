@@ -1,3 +1,5 @@
+## v0.1.2 (08.10.2023)
+
 -   Added ability to provide custom bytes separator via command line argument `--separator`.
 -   Added ability to provide custom timestamp precision of console payload output via command line argument `--precision`.
 -   Removed redundant module path and target from console output.

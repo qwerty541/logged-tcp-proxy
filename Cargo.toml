@@ -1,6 +1,6 @@
 [package]
 name = "logged_tcp_proxy"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 authors = ["Alexandr Garbuzov <qwerty541zxc@gmail.com>"]
 description = "Command line interface for proxying TCP connections with payload output into console which can be formatted different ways."
