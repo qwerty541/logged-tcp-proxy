@@ -40,7 +40,7 @@ $ cargo install logged_tcp_proxy
 Now you can run compiled binary:
 
 ```sh
-$ logged_tcp_proxy -b 127.0.0.1:20502 -r 127.0.0.1:20582
+$ logged_tcp_proxy --bind-listener-addr 127.0.0.1:20502 --remote-addr 127.0.0.1:20582
 ```
 
 ### From git repository
@@ -60,7 +60,7 @@ $ cargo build
 Now you can run compiled binary:
 
 ```sh
-$ ./target/debug/logged_tcp_proxy -b 127.0.0.1:20502 -r 127.0.0.1:20582
+$ ./target/debug/logged_tcp_proxy --bind-listener-addr 127.0.0.1:20502 --remote-addr 127.0.0.1:20582
 ```
 
 ## Options
@@ -98,7 +98,7 @@ Options:
 Below is an example of using this command line tool as proxy between device and data storage server with command and console output.
 
 ```
-$ logged_tcp_proxy -b 127.0.0.1:20502 -r 127.0.0.1:20582
+$ logged_tcp_proxy --bind-listener-addr 127.0.0.1:20502 --remote-addr 127.0.0.1:20582
 [2023-05-04T02:39:33Z INFO] Listener binded, waiting for incoming connections...
 [2023-05-04T02:39:37Z INFO] Incoming connection from 127.0.0.1:50376
 [2023-05-04T02:39:37Z DEBUG] < 00:00:00:00:00:19:6f:03:16:00:1f:00:20:00:11:00:22:00:33:00:44:00:55:00:66:00:01:00:00:00:00
