@@ -14,7 +14,7 @@ async fn main() {
         .parse_default_env()
         .format_target(false)
         .format_module_path(false)
-        .format_timestamp(Some(arguments.precision).map(From::from))
+        .format_timestamp(Some(From::from(arguments.precision)))
         .init();
 
     initialize_tcp_listener(arguments).await;
