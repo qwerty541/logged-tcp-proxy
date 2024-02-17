@@ -10,7 +10,7 @@
 [license-badge]: https://img.shields.io/crates/l/logged_tcp_proxy.svg
 [workflow-badge]: https://github.com/qwerty541/logged-tcp-proxy/workflows/check/badge.svg
 [actions-url]: https://github.com/qwerty541/logged-tcp-proxy/actions
-[rust-version]: https://img.shields.io/badge/rust-1.70.0%2B-lightgrey.svg?logo=rust
+[rust-version]: https://img.shields.io/badge/rust-1.74.1%2B-lightgrey.svg?logo=rust
 
 ## Table of contents <!-- omit from toc -->
 
