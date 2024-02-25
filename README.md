@@ -45,22 +45,18 @@ $ logged_tcp_proxy --bind-listener-addr 127.0.0.1:20502 --remote-addr 127.0.0.1:
 
 ### From git repository
 
-At first clone project using the following command:
+Run the following command and wait until the crate is compiled:
 
 ```sh
-$ git clone git@github.com:qwerty541/logged-tcp-proxy.git
+$ cargo install --git https://github.com/qwerty541/logged-tcp-proxy.git --tag v0.1.2 logged_tcp_proxy
 ```
 
-Than you need to compile crate by running the following command in project directory:
-
-```sh
-$ cargo build
-```
+Also you can remove tag option to install the latest development version.
 
 Now you can run compiled binary:
 
 ```sh
-$ ./target/debug/logged_tcp_proxy --bind-listener-addr 127.0.0.1:20502 --remote-addr 127.0.0.1:20582
+$ logged_tcp_proxy --bind-listener-addr 127.0.0.1:20502 --remote-addr 127.0.0.1:20582
 ```
 
 ## Options
