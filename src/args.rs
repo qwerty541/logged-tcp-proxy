@@ -8,7 +8,6 @@ use logged_stream::DecimalFormatter;
 use logged_stream::LowercaseHexadecimalFormatter;
 use logged_stream::OctalFormatter;
 use logged_stream::UppercaseHexadecimalFormatter;
-use std::convert::From;
 use std::fmt;
 use std::net;
 use std::str::FromStr;

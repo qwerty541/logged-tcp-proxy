@@ -1,9 +1,7 @@
 use clap::Parser;
 use logged_tcp_proxy::initialize_tcp_listener;
 use logged_tcp_proxy::Arguments;
-use std::convert::From;
 use std::env;
-use std::string::ToString;
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() {
