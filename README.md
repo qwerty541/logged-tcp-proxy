@@ -12,17 +12,6 @@
 [actions-url]: https://github.com/qwerty541/logged-tcp-proxy/actions
 [rust-version]: https://img.shields.io/badge/rust-1.74.1%2B-lightgrey.svg?logo=rust
 
-## Table of contents <!-- omit from toc -->
-
-- [Description](#description)
-- [Installation](#installation)
-  - [From crates.io (Recommended)](#from-cratesio-recommended)
-  - [From git repository](#from-git-repository)
-- [Options](#options)
-- [Example](#example)
-- [License](#license)
-- [Contribution](#contribution)
-
 ## Description
 
 This repository provides a command line interface for proxying TCP connections with payload output into the console. Payload output can be formatted in different ways: hexadecimal (lowercase and uppercase), decimal, octal and binary.
