@@ -1,4 +1,4 @@
-# logged-tcp-proxy <!-- omit from toc -->
+# logged-tcp-proxy
 
 [![Crates.io][crates-badge]][crates-url]
 ![Rust version][rust-version]
