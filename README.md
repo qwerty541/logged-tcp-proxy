@@ -1,4 +1,4 @@
-# logged-tcp-proxy
+# logged-tcp-proxy <!-- omit in toc -->
 
 [![Crates.io][crates-badge]][crates-url]
 ![Rust version][rust-version]
@@ -11,6 +11,19 @@
 [workflow-badge]: https://github.com/qwerty541/logged-tcp-proxy/workflows/check/badge.svg
 [actions-url]: https://github.com/qwerty541/logged-tcp-proxy/actions
 [rust-version]: https://img.shields.io/badge/rust-1.74.1%2B-lightgrey.svg?logo=rust
+
+<details>
+<summary>Table of contents</summary>
+
+- [Description](#description)
+- [Installation](#installation)
+  - [From crates.io (Recommended)](#from-cratesio-recommended)
+  - [From git repository](#from-git-repository)
+- [Options](#options)
+- [Example](#example)
+- [License](#license)
+- [Contribution](#contribution)
+</details>
 
 ## Description
 
