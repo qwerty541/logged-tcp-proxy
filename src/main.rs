@@ -1,7 +1,3 @@
-// Allow this lints because of false positives on nightly toolchain.
-// Should be removed after merging https://github.com/rust-lang/rust-clippy/pull/13464
-#![allow(clippy::needless_return)]
-
 use clap::Parser;
 use logged_tcp_proxy::initialize_tcp_listener;
 use logged_tcp_proxy::Arguments;
