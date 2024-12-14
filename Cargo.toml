@@ -19,7 +19,7 @@ exclude = [".github", ".vscode", ".gitignore"]
 
 [dependencies]
 bytes = "1.9.0"
-clap = { version = "4.5.21", features = ["std", "derive"] }
+clap = { version = "4.5.23", features = ["std", "derive"] }
 env_logger = "0.10.2"
 logged-stream = "0.4.0"
 log = "0.4.22"
