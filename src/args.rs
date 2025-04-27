@@ -55,7 +55,7 @@ impl FromStr for LoggingLevel {
                 return Ok(*variant);
             }
         }
-        Err(format!("Invalid variant: {}", s))
+        Err(format!("Invalid variant: {s}"))
     }
 }
 
@@ -108,7 +108,7 @@ impl FromStr for PayloadFormatingKind {
                 return Ok(*variant);
             }
         }
-        Err(format!("Invalid variant: {}", s))
+        Err(format!("Invalid variant: {s}"))
     }
 }
 
@@ -175,7 +175,7 @@ impl FromStr for TimestampPrecision {
                 return Ok(*variant);
             }
         }
-        Err(format!("Invalid variant: {}", s))
+        Err(format!("Invalid variant: {s}"))
     }
 }
 
