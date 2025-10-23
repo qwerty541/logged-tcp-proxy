@@ -5,6 +5,7 @@
 ![Rust version][rust-version]
 ![License][license-badge]
 [![Workflow Status][workflow-badge]][actions-url]
+![Lines count][sloc-badge]
 
 [crates-version-badge]: https://img.shields.io/crates/v/logged_tcp_proxy.svg
 [crates-downloads-badge]: https://img.shields.io/crates/d/logged_tcp_proxy.svg
@@ -13,6 +14,7 @@
 [workflow-badge]: https://github.com/qwerty541/logged-tcp-proxy/workflows/check/badge.svg
 [actions-url]: https://github.com/qwerty541/logged-tcp-proxy/actions
 [rust-version]: https://img.shields.io/badge/rust-1.74.1%2B-lightgrey.svg?logo=rust
+[sloc-badge]: https://sloc.xyz/github/qwerty541/logged-tcp-proxy/?badge-bg-color=2081C2
 
 <details>
 <summary>Table of contents</summary>
