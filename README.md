@@ -3,7 +3,7 @@
 [![Crates.io version][crates-version-badge]][crates-url]
 [![Crates.io downloads][crates-downloads-badge]][crates-url]
 ![Rust version][rust-version]
-![License][license-badge]
+[![License][license-badge]][license-url]
 [![Workflow Status][workflow-badge]][actions-url]
 ![Lines count][sloc-badge]
 ![Cocomo][cocomo-badge]
@@ -12,6 +12,7 @@
 [crates-downloads-badge]: https://img.shields.io/crates/d/logged_tcp_proxy.svg
 [crates-url]: https://crates.io/crates/logged_tcp_proxy
 [license-badge]: https://img.shields.io/crates/l/logged_tcp_proxy.svg
+[license-url]: https://github.com/qwerty541/logged-tcp-proxy/blob/master/LICENSE-MIT
 [workflow-badge]: https://github.com/qwerty541/logged-tcp-proxy/workflows/check/badge.svg
 [actions-url]: https://github.com/qwerty541/logged-tcp-proxy/actions
 [rust-version]: https://img.shields.io/badge/rust-1.74.1%2B-lightgrey.svg?logo=rust
