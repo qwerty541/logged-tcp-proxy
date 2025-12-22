@@ -4,78 +4,72 @@
 <summary>Table of contents</summary>
 
 - [Description](#description)
-- [Ground rules](#ground-rules)
 - [Code of Conduct](#code-of-conduct)
-- [Security](#security)
-- [Licensing](#licensing)
-- [Repository structure and crate info](#repository-structure-and-crate-info)
-- [Getting started](#getting-started)
+- [Ways to Contribute](#ways-to-contribute)
+- [Development Setup](#development-setup)
   - [Prerequisites](#prerequisites)
-  - [Build and run](#build-and-run)
-  - [Formatting](#formatting)
-  - [Linting](#linting)
-  - [Testing](#testing)
-  - [Docs](#docs)
-- [Development guidelines](#development-guidelines)
-- [Commit messages](#commit-messages)
-- [Branching and PRs](#branching-and-prs)
-- [Local tips for this project](#local-tips-for-this-project)
-- [Questions](#questions)
+  - [Building](#building)
+  - [Running](#running)
+  - [Linting \& Formatting](#linting--formatting)
+- [Project Structure](#project-structure)
+- [Feature Guidelines](#feature-guidelines)
+- [Performance \& Reliability](#performance--reliability)
+- [Documentation](#documentation)
+- [Commit \& PR Etiquette](#commit--pr-etiquette)
+- [Security](#security)
+- [License](#license)
 </details>
 
 ## Description
 
 Thanks for your interest in contributing! This document outlines how to propose changes, report issues, and develop locally. The project follows common practices used across the Rust crates community.
 
-## Ground rules
-
-- Be respectful and constructive. This project follows a Code of Conduct.
-- Discuss large changes via issue before opening a PR.
-- Keep PRs small and focused; separate unrelated changes.
-- Ensure CI/build, lint, and tests pass locally before submitting.
-
 ## Code of Conduct
 
-Please read and adhere to the [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+This project adheres to a Code of Conduct. By participating, you agree to uphold it.
 
-## Security
+- See [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md)
 
-If you believe you have found a security vulnerability, please do not open a public issue. Follow the instructions in [SECURITY.md](SECURITY.md).
+## Ways to Contribute
 
-## Licensing
+- Report bugs or suggest improvements via GitHub Issues
+- Implement features (check open issues or propose new ones)
+- Improve documentation (README, CLI help, examples)
+- Triage issues (labels, reproductions, platform checks)
 
-By contributing, you agree that your contributions will be licensed under the terms of this repository: dual-licensed as [MIT](LICENSE-MIT) and [Apache-2.0](LICENSE-APACHE).
-
-## Repository structure and crate info
-
-- Crate name: `logged_tcp_proxy`
-- Edition: 2021
-- Minimum Supported Rust Version (MSRV): `1.74.1` (from `Cargo.toml`’s `rust-version`)
-- Binary entrypoint: `src/main.rs`
-- Library exports: `src/lib.rs`
-- Core modules: `args.rs` (CLI args and formatters), `conn.rs` (connection handling)
-
-## Getting started
+## Development Setup
 
 ### Prerequisites
-- Rust toolchain via [rustup](https://rustup.rs/), MSRV `1.74.1` or newer.
+
+- Rust toolchain (stable) installed via [rustup](https://rustup.rs/)
+- Cargo (bundled with rustup)
+- Minimum Supported Rust Version (MSRV): `1.74.1`
 - Recommended components:
   - `rustfmt` for formatting
   - `clippy` for linting
 
-Install the components:
+Install recommended components:
 
 ```bash
 rustup component add rustfmt clippy
 ```
 
-### Build and run
+### Building
 
 ```bash
-# Build
 cargo build
+```
 
-# Run (example; adjust addresses as needed)
+### Running
+
+```bash
+cargo run -- [OPTIONS]
+```
+
+Common quick runs:
+
+```bash
+# Proxy from local 127.0.0.1:9000 to 127.0.0.1:9100 with lower-hex payload logging
 cargo run -- \
   --bind-listener-addr 127.0.0.1:9000 \
   --remote-addr 127.0.0.1:9100 \
@@ -83,75 +77,72 @@ cargo run -- \
   --separator : \
   --precision seconds \
   --level debug
+
+# Decimal formatting with millisecond timestamps
+cargo run -- \
+  --bind-listener-addr 127.0.0.1:8000 \
+  --remote-addr 127.0.0.1:8080 \
+  --formatting decimal \
+  --separator , \
+  --precision milliseconds \
+  --level info
 ```
 
-### Formatting
+### Linting & Formatting
 
-Use Rustfmt’s default style. Before committing:
+- Formatting: `cargo fmt --all`
+- Linting: `cargo clippy --all-targets --all-features -- -D warnings`
 
-```bash
-cargo fmt --all
-```
+## Project Structure
 
-### Linting
+- `src/` — application source code
+  - `args.rs` — CLI arguments, value enums, and payload formatter selection
+  - `conn.rs` — TCP proxying logic, logging, timeouts, and task management
+  - `lib.rs` — re-exports for library consumers
+  - `main.rs` — binary entry point and logger initialization
+- `Cargo.toml` — crate metadata (edition 2021, MSRV 1.74.1, licenses)
+- `README.md` — usage, installation, and reference docs
+- `CHANGELOG.md` — release notes
+- `SECURITY.md` — how to report security issues
+- `CODE_OF_CONDUCT.md` — community standards
+- `LICENSE-APACHE`, `LICENSE-MIT` — dual license files
 
-Use Clippy and fix warnings or justify them:
+## Feature Guidelines
 
-```bash
-cargo clippy --all-targets --all-features -- -D warnings
-```
+- Keep default behavior sensible: safe logging defaults, reasonable buffer sizes, and clear timeouts
+- Add flags for opt-in changes rather than breaking existing behavior
+- Maintain consistent output formatting across supported kinds (decimal/lowerhex/upperhex/binary/octal)
+- Prefer small, incremental PRs
 
-### Testing
+## Performance & Reliability
 
-Add unit tests where reasonable (e.g., argument parsing, formatter selection) and consider integration tests for proxy behavior.
+- Avoid blocking operations in async contexts; the project uses Tokio and `LoggedStream`
+- Re-use buffers (`BytesMut`) where possible and avoid unnecessary allocations
+- Use timeouts thoughtfully; ensure tasks are cancelled cleanly on shutdown or errors
+- Be cautious with spawn/abort semantics; prefer structured concurrency where feasible
+- Use appropriate log levels; avoid excessive logging in hot paths
 
-```bash
-cargo test --all
-```
+## Documentation
 
-If adding async code/tests, prefer `tokio::test` for executor support.
+- Update [README.md](./README.md) and examples when adding or changing CLI arguments
+- Add changelog entries under `## Unreleased` and reference commits/issues in [CHANGELOG.md](./CHANGELOG.md)
 
-### Docs
+## Commit & PR Etiquette
 
-- Keep `README.md` in sync with behavior and CLI options.
-- Public APIs (in `lib.rs`) should have doc comments. Run:
+- Use conventional, descriptive commit messages (e.g., `feat:`, `fix:`, `docs:`)
+- Reference issues (e.g., `resolves #123`) when applicable
+- Keep PRs focused; include notes on testing and potential impacts
+- Before submitting, ensure locally:
+  - `cargo fmt --all`
+  - `cargo clippy --all-targets --all-features -- -D warnings`
+  - `cargo test`
 
-```bash
-cargo doc --no-deps
-```
+## Security
 
-## Development guidelines
+Please report vulnerabilities via the documented security protocol.
 
-- Follow the MSRV unless discussed otherwise. Use simple, well-supported APIs.
-- Prefer small, cohesive functions. Avoid unnecessary unsafe.
-- Log thoughtfully: use levels consistently (`trace` to `error`).
-- Handle errors gracefully; avoid panics in normal flows. If `expect`/`unwrap` is used, justify in comments.
-- Keep async boundaries clear; avoid blocking calls in async contexts.
-- For CLI changes, update `Arguments` in `args.rs`, and ensure help texts and defaults are accurate.
+- See [SECURITY.md](./SECURITY.md)
 
-## Commit messages
+## License
 
-- Use clear, descriptive messages. Example prefix styles are welcome (e.g., `feat:`, `fix:`, `docs:`, `refactor:`), but not required.
-- Reference issues when applicable (e.g., `fixes #123`).
-
-## Branching and PRs
-
-- Create a topic branch from the default branch.
-- Describe the change in the PR body: motivation, approach, and trade-offs.
-- Include a short checklist:
-  - [ ] `cargo fmt` run
-  - [ ] `cargo clippy` passes (no warnings)
-  - [ ] `cargo test` passes
-  - [ ] Docs updated (`README.md`, comments)
-  - [ ] MSRV respected
-
-## Local tips for this project
-
-- Logging level is controlled by CLI argument `--level`; the app sets `RUST_LOG` accordingly.
-- Payload formatting options: `decimal`, `lowerhex`, `upperhex`, `binary`, `octal`.
-- Timestamp precision options: `seconds`, `milliseconds`, `microseconds`, `nanoseconds`.
-- Connection proxy behavior is in `conn.rs`; consider adding tests around forwarding, timeouts, and shutdown behavior.
-
-## Questions
-
-If you’re unsure about an approach, open a discussion or an issue before large work.
+By contributing, you agree that your contributions will be licensed under the terms listed in [LICENSE-APACHE](./LICENSE-APACHE) and [LICENSE-MIT](./LICENSE-MIT).
