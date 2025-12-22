@@ -1,4 +1,29 @@
-# Contributing to logged-tcp-proxy
+# Contributing to logged-tcp-proxy <!-- omit in toc -->
+
+<details>
+<summary>Table of contents</summary>
+
+- [Description](#description)
+- [Ground rules](#ground-rules)
+- [Code of Conduct](#code-of-conduct)
+- [Security](#security)
+- [Licensing](#licensing)
+- [Repository structure and crate info](#repository-structure-and-crate-info)
+- [Getting started](#getting-started)
+  - [Prerequisites](#prerequisites)
+  - [Build and run](#build-and-run)
+  - [Formatting](#formatting)
+  - [Linting](#linting)
+  - [Testing](#testing)
+  - [Docs](#docs)
+- [Development guidelines](#development-guidelines)
+- [Commit messages](#commit-messages)
+- [Branching and PRs](#branching-and-prs)
+- [Local tips for this project](#local-tips-for-this-project)
+- [Questions](#questions)
+</details>
+
+## Description
 
 Thanks for your interest in contributing! This document outlines how to propose changes, report issues, and develop locally. The project follows common practices used across the Rust crates community.
 
