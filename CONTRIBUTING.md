@@ -1,4 +1,4 @@
-# Contributing to `logged-tcp-proxy`
+# Contributing to logged-tcp-proxy
 
 Thanks for your interest in contributing! This document outlines how to propose changes, report issues, and develop locally. The project follows common practices used across the Rust crates community.
 
