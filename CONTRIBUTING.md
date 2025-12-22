@@ -135,7 +135,6 @@ cargo run -- \
 - Before submitting, ensure locally:
   - `cargo fmt --all`
   - `cargo clippy --all-targets --all-features -- -D warnings`
-  - `cargo test`
 
 ## Security
 
