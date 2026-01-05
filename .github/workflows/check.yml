@@ -1,113 +1,113 @@
 name: check
 
 on:
-    push:
-        branches:
-            - master
-    pull_request:
-        branches:
-            - "*"
-    workflow_dispatch: {}
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - "*"
+  workflow_dispatch: {}
 
 jobs:
-    clippy:
-        name: Clippy
-        runs-on: ubuntu-latest
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
 
-        strategy:
-            matrix:
-                rust: [stable, beta, nightly]
+    strategy:
+      matrix:
+        rust: [stable, beta, nightly]
 
-        steps:
-            - name: Checkout
-              uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
 
-            - name: Install rust (${{ matrix.rust }})
-              uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
-              with:
-                  components: clippy, rustfmt
-                  toolchain: ${{ matrix.rust }}
+      - name: Install rust (${{ matrix.rust }})
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          components: clippy, rustfmt
+          toolchain: ${{ matrix.rust }}
 
-            - name: Run clippy
-              run: cargo clippy --all-features -- -D warnings
+      - name: Run clippy
+        run: cargo clippy --all-features -- -D warnings
 
-    fmt:
-        name: Formatting
-        runs-on: ubuntu-latest
+  fmt:
+    name: Formatting
+    runs-on: ubuntu-latest
 
-        steps:
-            - name: Checkout
-              uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
 
-            - name: Install rust (stable)
-              uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
-              with:
-                  components: clippy, rustfmt
-                  toolchain: stable
+      - name: Install rust (stable)
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          components: clippy, rustfmt
+          toolchain: stable
 
-            - name: Run rustfmt
-              run: cargo fmt --check
+      - name: Run rustfmt
+        run: cargo fmt --check
 
-    build_and_test:
-        name: Build and test
-        runs-on: ${{ matrix.os }}-latest
+  build_and_test:
+    name: Build and test
+    runs-on: ${{ matrix.os }}-latest
 
-        strategy:
-            matrix:
-                os: [ubuntu, macos, windows]
-                rust: [stable, beta, nightly]
+    strategy:
+      matrix:
+        os: [ubuntu, macos, windows]
+        rust: [stable, beta, nightly]
 
-        steps:
-            - name: Checkout
-              uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
 
-            - name: Install rust (${{ matrix.rust }})
-              uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
-              with:
-                  toolchain: ${{ matrix.rust }}
+      - name: Install rust (${{ matrix.rust }})
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: ${{ matrix.rust }}
 
-            - name: Cache
-              uses: actions/cache@9255dc7a253b0ccc959486e2bca901246202afeb # v5.0.1
-              with:
-                  path: |
-                      ~/.cargo
-                      target
-                  key: ${{ matrix.os }}-${{ matrix.rust }}-${{ hashFiles('Cargo.lock') }}
-                  restore-keys: |
-                      ${{ matrix.os }}-${{ matrix.rust }}-${{ hashFiles('Cargo.lock') }}
-                      ${{ matrix.os }}-${{ matrix.rust }}-
-                  enableCrossOsArchive: true
+      - name: Cache
+        uses: actions/cache@9255dc7a253b0ccc959486e2bca901246202afeb # v5.0.1
+        with:
+          path: |
+            ~/.cargo
+            target
+          key: ${{ matrix.os }}-${{ matrix.rust }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ matrix.os }}-${{ matrix.rust }}-${{ hashFiles('Cargo.lock') }}
+            ${{ matrix.os }}-${{ matrix.rust }}-
+          enableCrossOsArchive: true
 
-            - name: Build
-              run: cargo build --all-targets
+      - name: Build
+        run: cargo build --all-targets
 
-            - name: Tests
-              run: cargo test
+      - name: Tests
+        run: cargo test
 
-    msrv:
-        name: Check minimal supported rust version (MSRV).
-        runs-on: ubuntu-latest
+  msrv:
+    name: Check minimal supported rust version (MSRV).
+    runs-on: ubuntu-latest
 
-        steps:
-            - name: Checkout
-              uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
 
-            - name: Install rust (stable)
-              uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
-              with:
-                  toolchain: stable
+      - name: Install rust (stable)
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: stable
 
-            - name: Cache
-              uses: actions/cache@9255dc7a253b0ccc959486e2bca901246202afeb # v5.0.1
-              with:
-                  path: |
-                      ~/.cargo
-                      target
-                  key: ${{ runner.os }}-msrv
-                  enableCrossOsArchive: true
+      - name: Cache
+        uses: actions/cache@9255dc7a253b0ccc959486e2bca901246202afeb # v5.0.1
+        with:
+          path: |
+            ~/.cargo
+            target
+          key: ${{ runner.os }}-msrv
+          enableCrossOsArchive: true
 
-            - name: Install cargo-msrv
-              run: cargo install cargo-msrv
+      - name: Install cargo-msrv
+        run: cargo install cargo-msrv
 
-            - name: Check msrv
-              run: cargo msrv find
+      - name: Check msrv
+        run: cargo msrv find
