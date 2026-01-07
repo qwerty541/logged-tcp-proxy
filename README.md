@@ -5,8 +5,8 @@
 ![Rust version][rust-version]
 [![License][license-badge]][license-url]
 [![Workflow Status][workflow-badge]][actions-url]
-![Lines count][sloc-badge]
-![Cocomo][cocomo-badge]
+[![Lines count][sloc-badge]][scc-repo-url]
+[![Cocomo][cocomo-badge]][scc-repo-url]
 
 [crates-version-badge]: https://img.shields.io/crates/v/logged_tcp_proxy.svg
 [crates-downloads-badge]: https://img.shields.io/crates/d/logged_tcp_proxy.svg
@@ -18,6 +18,7 @@
 [rust-version]: https://img.shields.io/badge/rust-1.74.1%2B-lightgrey.svg?logo=rust
 [sloc-badge]: https://sloc.xyz/github/qwerty541/logged-tcp-proxy/?badge-bg-color=2081C2
 [cocomo-badge]: https://sloc.xyz/github/qwerty541/logged-tcp-proxy/?badge-bg-color=2081C2&category=cocomo
+[scc-repo-url]: https://github.com/boyter/scc
 
 <details>
 <summary>Table of contents</summary>
