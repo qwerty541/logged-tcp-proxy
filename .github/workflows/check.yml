@@ -88,6 +88,7 @@ jobs:
   msrv:
     name: Check minimal supported rust version (MSRV).
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
