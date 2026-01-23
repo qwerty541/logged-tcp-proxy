@@ -107,9 +107,6 @@ jobs:
           key: ${{ runner.os }}-msrv
           enableCrossOsArchive: true
 
-      # - name: Install cargo-msrv
-      #   run: cargo install cargo-msrv
-
       - name: Install cargo-msrv
         uses: taiki-e/install-action@83961fc0a2afe7f045535b5741d9a6418d7e1168 # v2.66.0
         with:
