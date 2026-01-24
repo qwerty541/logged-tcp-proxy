@@ -88,7 +88,7 @@ jobs:
   msrv:
     name: Check minimal supported rust version (MSRV).
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
@@ -99,14 +99,23 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Cache
+      - name: Cache cargo registry and dependencies
         uses: actions/cache@8b402f58fbc84540c8b491a91e594a4576fec3d7 # v5.0.2
         with:
           path: |
             ~/.cargo
             target
-          key: ${{ runner.os }}-msrv
-          enableCrossOsArchive: true
+          key: ${{ runner.os }}-msrv-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-msrv-
+
+      - name: Cache rustup toolchains
+        uses: actions/cache@8b402f58fbc84540c8b491a91e594a4576fec3d7 # v5.0.2
+        with:
+          path: ~/.rustup/toolchains
+          key: ${{ runner.os }}-rustup-toolchains-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-rustup-toolchains-
 
       - name: Install cargo-msrv
         uses: taiki-e/install-action@83961fc0a2afe7f045535b5741d9a6418d7e1168 # v2.66.0
