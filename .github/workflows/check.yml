@@ -103,17 +103,18 @@ jobs:
         uses: actions/cache@8b402f58fbc84540c8b491a91e594a4576fec3d7 # v5.0.2
         with:
           path: |
-            ~/.cargo
-            target
-          key: ${{ runner.os }}-msrv-${{ hashFiles('Cargo.lock') }}
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-msrv-
+            ${{ runner.os }}-cargo-
 
       - name: Cache rustup toolchains
         uses: actions/cache@8b402f58fbc84540c8b491a91e594a4576fec3d7 # v5.0.2
         with:
           path: ~/.rustup/toolchains
-          key: ${{ runner.os }}-rustup-toolchains-${{ hashFiles('Cargo.lock') }}
+          key: ${{ runner.os }}-rustup-toolchains-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-rustup-toolchains-
 
