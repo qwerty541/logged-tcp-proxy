@@ -15,7 +15,7 @@
 [license-url]: https://github.com/qwerty541/logged-tcp-proxy/blob/master/LICENSE-MIT
 [workflow-badge]: https://github.com/qwerty541/logged-tcp-proxy/workflows/check/badge.svg
 [actions-url]: https://github.com/qwerty541/logged-tcp-proxy/actions
-[rust-version]: https://img.shields.io/badge/rust-1.74.1%2B-lightgrey.svg?logo=rust
+[rust-version]: https://img.shields.io/badge/rust-1.85.1%2B-lightgrey.svg?logo=rust
 [rust-url]: https://blog.rust-lang.org/
 [sloc-badge]: https://sloc.xyz/github/qwerty541/logged-tcp-proxy/?badge-bg-color=2081C2
 [cocomo-badge]: https://sloc.xyz/github/qwerty541/logged-tcp-proxy/?badge-bg-color=2081C2&category=cocomo
