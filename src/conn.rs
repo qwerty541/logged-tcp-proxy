@@ -7,7 +7,9 @@ use logged_stream::LoggedStream;
 use logged_stream::RecordKind;
 use logged_stream::RecordKindFilter;
 use std::time::Duration;
-use tokio::io::{self, AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
+use tokio::io::{self};
 use tokio::net as tokio_net;
 use tokio::time::timeout;
 
