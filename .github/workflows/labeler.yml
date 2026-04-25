@@ -4,22 +4,22 @@ on:
   - pull_request_target
 
 permissions:
-  actions: read
-  artifact-metadata: read
-  attestations: read
-  checks: read
+  actions: none
+  artifact-metadata: none
+  attestations: none
+  checks: none
   contents: read
-  deployments: read
-  discussions: read
-  id-token: write
-  issues: read
-  models: read
-  packages: read
-  pages: read
+  deployments: none
+  discussions: none
+  id-token: none
+  issues: none
+  models: none
+  packages: none
+  pages: none
   pull-requests: write
-  repository-projects: read
-  security-events: read
-  statuses: read
+  repository-projects: none
+  security-events: none
+  statuses: none
 
 jobs:
   triage:
