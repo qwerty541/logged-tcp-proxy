@@ -19,11 +19,11 @@ include = ["src/**/*", "Cargo.*", "CHANGELOG.md", "LICENSE-*", "README.md"]
 
 [dependencies]
 bytes = "1.11.1"
-clap = { version = "4.6.0", features = ["std", "derive"] }
+clap = { version = "4.6.1", features = ["std", "derive"] }
 env_logger = "0.11.10"
 logged-stream = "0.5.0"
 log = "0.4.29"
-tokio = { version = "1.51.1", features = [
+tokio = { version = "1.52.1", features = [
     "io-util",
     "macros",
     "net",
