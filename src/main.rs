@@ -1,6 +1,9 @@
+mod args;
+mod conn;
+
+use args::Arguments;
 use clap::Parser;
-use logged_tcp_proxy::initialize_tcp_listener;
-use logged_tcp_proxy::Arguments;
+use conn::initialize_tcp_listener;
 use std::env;
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
