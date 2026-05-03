@@ -6,21 +6,21 @@ on:
 
 permissions:
   actions: write
-  artifact-metadata: read
-  attestations: read
-  checks: read
-  contents: read
-  deployments: read
-  discussions: read
-  id-token: write
-  issues: read
-  models: read
-  packages: read
-  pages: read
-  pull-requests: read
-  repository-projects: read
-  security-events: read
-  statuses: read
+  artifact-metadata: none
+  attestations: none
+  checks: none
+  contents: none
+  deployments: none
+  discussions: none
+  id-token: none
+  issues: none
+  models: none
+  packages: none
+  pages: none
+  pull-requests: none
+  repository-projects: none
+  security-events: none
+  statuses: none
 
 jobs:
   cleanup:
