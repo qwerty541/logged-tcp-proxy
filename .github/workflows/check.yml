@@ -9,6 +9,9 @@ on:
       - "*"
   workflow_dispatch: {}
 
+env:
+  CARGO_TERM_COLOR: always
+
 permissions:
   actions: write
   artifact-metadata: none
