@@ -1,5 +1,5 @@
-use crate::get_formatter_by_kind;
-use crate::Arguments;
+use crate::args::get_formatter_by_kind;
+use crate::args::Arguments;
 use bytes::BytesMut;
 use logged_stream::ConsoleLogger;
 use logged_stream::DefaultFilter;
