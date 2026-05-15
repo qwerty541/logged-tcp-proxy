@@ -13,6 +13,7 @@ categories = [
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/qwerty541/logged-tcp-proxy"
 homepage = "https://github.com/qwerty541/logged-tcp-proxy"
+documentation = "https://docs.rs/logged_tcp_proxy"
 readme = "README.md"
 rust-version = "1.85.1"
 include = ["src/**/*", "Cargo.*", "CHANGELOG.md", "LICENSE-*", "README.md"]
