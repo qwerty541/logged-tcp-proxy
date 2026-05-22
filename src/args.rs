@@ -1,7 +1,8 @@
-use clap::builder::PossibleValue;
 use clap::Parser;
 use clap::ValueEnum;
+use clap::builder::PossibleValue;
 use env_logger::TimestampPrecision as EnvLoggerTimestampPrecision;
+use log::LevelFilter;
 use logged_stream::BinaryFormatter;
 use logged_stream::BufferFormatter;
 use logged_stream::DecimalFormatter;
@@ -65,6 +66,19 @@ impl fmt::Display for LoggingLevel {
             .expect("no values are skipped")
             .get_name()
             .fmt(f)
+    }
+}
+
+impl From<LoggingLevel> for LevelFilter {
+    fn from(level: LoggingLevel) -> Self {
+        match level {
+            LoggingLevel::Trace => LevelFilter::Trace,
+            LoggingLevel::Debug => LevelFilter::Debug,
+            LoggingLevel::Info => LevelFilter::Info,
+            LoggingLevel::Warn => LevelFilter::Warn,
+            LoggingLevel::Error => LevelFilter::Error,
+            LoggingLevel::Off => LevelFilter::Off,
+        }
     }
 }
 
