@@ -1,6 +1,6 @@
-use clap::builder::PossibleValue;
 use clap::Parser;
 use clap::ValueEnum;
+use clap::builder::PossibleValue;
 use env_logger::TimestampPrecision as EnvLoggerTimestampPrecision;
 use logged_stream::BinaryFormatter;
 use logged_stream::BufferFormatter;
