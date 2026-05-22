@@ -1,5 +1,5 @@
-use crate::args::get_formatter_by_kind;
 use crate::args::Arguments;
+use crate::args::get_formatter_by_kind;
 use bytes::BytesMut;
 use logged_stream::ConsoleLogger;
 use logged_stream::DefaultFilter;
@@ -53,18 +53,19 @@ async fn incoming_connection_handle(arguments: Arguments, source_stream: tokio_n
             ConsoleLogger::new_unchecked("debug"),
         ));
 
-    // TODO_FUTURE: looks like rustfmt currently does not support let-else syntax, remove skip attribute later
-    #[rustfmt::skip]
     let destination_stream_handle = tokio::spawn(async move {
         let mut buffer = BytesMut::with_capacity(2048);
         'destination_stream_handle: loop {
-            let Ok(read_length) = destination_stream_read_half.read_buf(&mut buffer).await else { 
+            let Ok(read_length) = destination_stream_read_half.read_buf(&mut buffer).await else {
                 break 'destination_stream_handle;
             };
             if read_length == 0 {
                 continue 'destination_stream_handle;
             }
-            let Ok(write_length) = source_stream_write_half.write(&buffer[0..read_length]).await else {
+            let write_result = source_stream_write_half
+                .write(&buffer[0..read_length])
+                .await;
+            let Ok(write_length) = write_result else {
                 break 'destination_stream_handle;
             };
             assert_eq!(read_length, write_length);
@@ -72,23 +73,27 @@ async fn incoming_connection_handle(arguments: Arguments, source_stream: tokio_n
         }
     });
 
-    #[rustfmt::skip]
     tokio::spawn(async move {
         let mut buffer = BytesMut::with_capacity(2048);
         'source_stream_handle: loop {
-            let Ok(Ok(read_length)) = timeout(
+            let read_result = timeout(
                 Duration::from_secs(arguments.timeout),
-                source_stream_read_half.read_buf(&mut buffer)
-            ).await else {
+                source_stream_read_half.read_buf(&mut buffer),
+            )
+            .await;
+            let Ok(Ok(read_length)) = read_result else {
                 destination_stream_handle.abort();
                 break 'source_stream_handle;
             };
             if read_length == 0 {
                 continue 'source_stream_handle;
             }
-            let Ok(write_length) = destination_stream_write_half.write(&buffer[0..read_length]).await else {
+            let write_result = destination_stream_write_half
+                .write(&buffer[0..read_length])
+                .await;
+            let Ok(write_length) = write_result else {
                 destination_stream_handle.abort();
-                break 'source_stream_handle;    
+                break 'source_stream_handle;
             };
             assert_eq!(read_length, write_length);
             buffer.clear();
