@@ -288,9 +288,9 @@ checksum = "113b30b4cd05f7c06868fdb2854f66a7b9fece9a48425351cd532e810d74024f"
 
 [[package]]
 name = "logged-stream"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "59a62d166133bb28ec9df6f35083ce592b91a3185b6b77c09fe9d9f1e4e384a0"
+checksum = "97e5bb354270222ff9e2d87ed069e9a7a921850e637f3fc8ddff4c0f9b6753f7"
 dependencies = [
  "chrono",
  "itertools",
