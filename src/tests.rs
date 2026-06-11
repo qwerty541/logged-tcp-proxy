@@ -36,7 +36,7 @@ fn test_arguments(bind_listener_addr: SocketAddr, remote_addr: SocketAddr) -> Ar
         level: LoggingLevel::Off,
         bind_listener_addr,
         remote_addr,
-        timeout: 5,
+        timeout: IO_TIMEOUT.as_secs(),
         formatting: PayloadFormatingKind::LowerHex,
         separator: ":".to_string(),
         precision: TimestampPrecision::Seconds,
