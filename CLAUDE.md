@@ -49,6 +49,9 @@ All source lives in `src/`:
     can be driven by tests with a pre-bound (ephemeral-port) listener.
   - `incoming_connection_handle(arguments, source_stream)` (private) — sets up
     the per-connection bidirectional relay (see below).
+- [`src/tests.rs`](src/tests.rs) — in-crate integration tests, compiled only
+  under `#[cfg(test)]` (declared as `mod tests;` from `main.rs`). See
+  [Testing](#testing).
 
 ## How a proxied connection works
 
@@ -116,6 +119,28 @@ cargo fmt --check                         # rustfmt.toml: imports_granularity="I
 cargo msrv find                           # verify MSRV (requires cargo-msrv)
 ```
 
+## Testing
+
+Integration tests live **inside the crate** in [`src/tests.rs`](src/tests.rs)
+under `#[cfg(test)]`, rather than in a top-level `tests/` directory. This is a
+deliberate choice: a `tests/` directory can only exercise a crate's public
+**library** API, which would require adding a `lib` target and publishing a
+library surface on docs.rs. Keeping the tests in-crate lets them call internal
+(`pub(crate)`) functions directly while the package stays binary-only.
+
+The tests are fully self-contained and portable:
+
+- Each test spins up its own minimal **echo server** written with plain Tokio
+  (no external tools like `python`/`netcat`, no extra dev-dependencies).
+- Both the echo server and the proxy listener bind to `127.0.0.1:0`, letting the
+  OS assign ephemeral ports — so parallel test/CI jobs never collide and there
+  are no hardcoded ports. Always use the literal `127.0.0.1` (not `localhost`,
+  which can resolve to IPv6 on Windows).
+- All network I/O is wrapped in `tokio::time::timeout`, so tests fail fast
+  instead of hanging and avoid `sleep`-based flakiness.
+- Tests run via `cargo test`, identically on the developer machine and in CI
+  (ubuntu/macos/windows × stable/beta/nightly).
+
 ## Continuous integration
 
 [`.github/workflows/check.yml`](.github/workflows/check.yml) runs on push to
@@ -137,3 +162,5 @@ Dependabot (`.github/dependabot.yml`).
   one import per line (`imports_granularity = "Item"`) and field-init shorthand
   (`use_field_init_shorthand = true`). Run `cargo fmt` before committing.
 - Non-Rust files are formatted with Prettier (`.prettierrc`).
+- Keep the binary-only shape: prefer `pub(crate)` for internals that tests need,
+  rather than introducing a public `lib` target.
