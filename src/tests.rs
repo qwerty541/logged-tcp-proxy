@@ -25,8 +25,8 @@ use tokio::time::timeout;
 /// avoid flakiness on a loaded CI runner, small enough to fail fast on a hang.
 const IO_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The loopback host literal. Always `127.0.0.1` (never `localhost`, which can
-/// resolve to IPv6 on Windows).
+/// Loopback bind address using an ephemeral port (`127.0.0.1:0`). Always `127.0.0.1`
+/// (never `localhost`, which can resolve to IPv6 on Windows).
 const LOOPBACK: &str = "127.0.0.1:0";
 
 /// Build proxy `Arguments` pointing at `remote_addr`, with logging silenced so
