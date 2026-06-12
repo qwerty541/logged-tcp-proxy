@@ -7,25 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- Implemented integration tests for the core connection handling logic in `src/tests.rs`. These tests cover various scenarios of client-server interactions through the proxy, including normal data relay, connection drops, and error handling.
+
 ### Changed
 
-- Updated minimal supported rust version (MSRV) from 1.70.0 to 1.74.1
+- Migrated the codebase to the 2024 edition of Rust.
+- Bumped MSRV from 1.70.0 to 1.85.1
+- Remove lib.rs file and use modules directly in binary to make the crate binary-only. This is intentional to prevent the crate from being used as a library and to clarify that it is only meant to be used as a command-line tool.
+- Use opt-in `include` Cargo.toml property instead of inclusive `exclude` to prevent irrelevant files from being packaged.
 
 ### Documentation
 
+- Created security protocol document with instructions for reporting security vulnerabilities.
+- Created basic contributing document with instructions for contributing to the project.
 - Table of contents currently hidden by default.
 - Restructured changelog for better match with [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
+- Updated license badge to be clickable and link to the license file in the repository.
+- Updated Rust version badge to be clickable.
+- Added total lines count badge to the README file.
+- Added COCOMO badge to the README file.
+- Added crates.io downloads badge to the README file.
+- Updated copyright year in license file to 2023-2026.
+- Updated the README and CONTRIBUTING documents with the new MSRV and other relevant information.
+- Created CLAUDE.md with codebase guidance for AI-assisted development.
 
 ### Dependencies
 
-- Updated `tokio` from 1.32.0 to 1.38.0
-- Updated `clap` from 4.4.6 to 4.5.8
-- Updated `env_logger` from 0.10.0 to 0.10.2
+- Updated `tokio` from 1.32.0 to 1.52.3
+- Updated `clap` from 4.4.6 to 4.6.1
+- Updated `env_logger` from 0.10.0 to 0.11.10
 - Updated `rustix` from 0.38.8 to 0.38.27
-- Updated `logged-stream` from 0.3.4 to 0.4.0
-- Updated `log` from 0.4.20 to 0.4.22
+- Updated `logged-stream` from 0.3.4 to 0.6.0
+- Updated `log` from 0.4.20 to 0.4.31
 - Updated `mio` from 0.8.9 to 0.8.11
-- Updated `bytes` from 1.5.0 to 1.6.0
+- Updated `bytes` from 1.5.0 to 1.11.1
+- Updated `anstream` from 0.6.7 to 0.6.21
+- Updated `slab` from 0.4.10 to 0.4.11
 
 ## v0.1.2 (08.10.2023)
 
