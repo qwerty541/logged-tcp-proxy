@@ -100,7 +100,7 @@ cargo run -- \
   - `conn.rs` — TCP proxying logic, logging, timeouts, and task management
   - `lib.rs` — re-exports for library consumers
   - `main.rs` — binary entry point and logger initialization
-- `Cargo.toml` — crate metadata (edition 2021, MSRV 1.85.1, licenses)
+- `Cargo.toml` — crate metadata (edition 2024, MSRV 1.85.1, licenses)
 - `README.md` — usage, installation, and reference docs
 - `CHANGELOG.md` — release notes
 - `SECURITY.md` — how to report security issues
