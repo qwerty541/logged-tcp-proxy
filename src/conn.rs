@@ -20,6 +20,13 @@ pub async fn initialize_tcp_listener(arguments: Arguments) {
 
     log::info!("Listener binded, waiting for incoming connections...");
 
+    run_accept_loop(listener, arguments).await;
+}
+
+/// Accept connections on an already-bound listener and spawn a relay handler for
+/// each one. Split out from [`initialize_tcp_listener`] so tests can drive it
+/// with a listener bound to an ephemeral port.
+pub(crate) async fn run_accept_loop(listener: tokio_net::TcpListener, arguments: Arguments) {
     loop {
         let cloned_arguments = arguments.clone();
         let accept = listener.accept().await;
