@@ -18,6 +18,7 @@ documentation:
           - CODE_OF_CONDUCT.md
           - SECURITY.md
           - CONTRIBUTING.md
+          - CLAUDE.md
 
 github_actions:
   - changed-files:
