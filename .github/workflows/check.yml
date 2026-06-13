@@ -108,6 +108,26 @@ jobs:
       - name: Tests
         run: cargo test
 
+  integration:
+    name: Binary integration test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Install rust (stable)
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+
+      # Builds the binary and exercises it end to end (relay + console output)
+      # via the standard-library Python script. Python 3 is preinstalled on the
+      # ubuntu runner.
+      - name: Run black-box integration test
+        run: python3 scripts/integration_test.py
+
   msrv:
     name: Check minimal supported rust version (MSRV).
     runs-on: ubuntu-latest
