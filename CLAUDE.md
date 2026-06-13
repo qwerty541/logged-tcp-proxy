@@ -49,6 +49,10 @@ All source lives in `src/`:
     can be driven by tests with a pre-bound (ephemeral-port) listener.
   - `incoming_connection_handle(arguments, source_stream)` (private) — sets up
     the per-connection bidirectional relay (see below).
+  - `relay(reader, writer, read_timeout)` (private, generic) — copies bytes in
+    one direction until end-of-stream, a read/write error, or (when
+    `read_timeout` is set) an idle read timeout, then shuts down `writer` to
+    forward the close to its peer.
 - [`src/tests.rs`](src/tests.rs) — in-crate integration tests, compiled only
   under `#[cfg(test)]` (declared as `mod tests;` from `main.rs`). See
   [Testing](#testing).
@@ -61,13 +65,19 @@ All source lives in `src/`:
    and `tokio::io::split`s it into read/write halves.
 2. Connects a fresh `TcpStream` to `arguments.remote_addr` ("destination"),
    wraps it in another `LoggedStream`, and splits it too.
-3. Spawns two relay tasks:
-   - **destination → source**: reads from the destination and writes to the
-     source.
-   - **source → destination**: reads from the source (each read wrapped in a
-     `tokio::time::timeout` of `arguments.timeout` seconds) and writes to the
-     destination. On a source read error/timeout it aborts the destination
-     task.
+3. Relays both directions concurrently with `tokio::join!` over two `relay`
+   futures (one connection task, not two spawned per-direction tasks), running
+   each direction to completion:
+   - **destination → source**: copies bytes from the destination to the source.
+   - **source → destination**: copies bytes from the source to the destination,
+     with each read bounded by a `tokio::time::timeout` of `arguments.timeout`
+     seconds (an idle-read timeout on the client side).
+   Each `relay` ends at end-of-stream (a `0`-length read), on a read/write error,
+   or — for the source side — on an idle timeout, then shuts down its writer to
+   forward the close to that peer (a half-close). Because both directions run to
+   completion independently (rather than one being cancelled when the other ends),
+   data still in flight in the other direction is delivered before the connection
+   closes.
 
 ### Logging / de-duplication detail (intentional)
 
