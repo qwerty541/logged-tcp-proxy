@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed `lib.rs` and used modules directly in the binary to make the crate binary-only. This is intentional to prevent the crate from being used as a library and to clarify that it is only meant to be used as a command-line tool.
 - Switched to the opt-in `include` property in `Cargo.toml` instead of the inclusive `exclude` property to prevent irrelevant files from being packaged.
 
+### Fixed
+
+- Fixed a defect where closing or half-closing a proxied connection could make the proxy spin at 100% CPU on one core; end-of-stream is now handled cleanly and the connection is torn down.
+- A close on one side of a proxied connection is now forwarded to the other side (graceful shutdown), and each direction keeps relaying until it ends, so a response that is still arriving when the client finishes sending is no longer dropped.
+
 ### Documentation
 
 - Created security protocol document with instructions for reporting security vulnerabilities.
