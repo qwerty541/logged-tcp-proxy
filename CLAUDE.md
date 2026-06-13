@@ -86,7 +86,7 @@ console sink is `ConsoleLogger` at the `"debug"` label.
 - `clap` (`std`, `derive`) — CLI parsing.
 - `env_logger` + `log` — logging frontend/facade.
 - `bytes` — `BytesMut` relay buffers.
-- `logged-stream` (`0.5.0`) — the companion crate (same author) that provides
+- `logged-stream` (`0.6.0`) — the companion crate (same author) that provides
   `LoggedStream`, the `BufferFormatter` implementations
   (`DecimalFormatter`, `LowercaseHexadecimalFormatter`,
   `UppercaseHexadecimalFormatter`, `BinaryFormatter`, `OctalFormatter`),
