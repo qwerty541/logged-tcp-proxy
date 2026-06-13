@@ -7,7 +7,9 @@ use logged_stream::LoggedStream;
 use logged_stream::RecordKind;
 use logged_stream::RecordKindFilter;
 use std::time::Duration;
+use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt;
 use tokio::io::{self};
 use tokio::net as tokio_net;
@@ -43,7 +45,7 @@ pub(crate) async fn run_accept_loop(listener: tokio_net::TcpListener, arguments:
 }
 
 async fn incoming_connection_handle(arguments: Arguments, source_stream: tokio_net::TcpStream) {
-    let (mut source_stream_read_half, mut source_stream_write_half) = io::split(LoggedStream::new(
+    let (source_stream_read_half, source_stream_write_half) = io::split(LoggedStream::new(
         source_stream,
         get_formatter_by_kind(arguments.formatting, arguments.separator.as_str()),
         DefaultFilter,
@@ -52,7 +54,7 @@ async fn incoming_connection_handle(arguments: Arguments, source_stream: tokio_n
     let destination_stream = tokio_net::TcpStream::connect(arguments.remote_addr)
         .await
         .expect("Failed to connect to destination address");
-    let (mut destination_stream_read_half, mut destination_stream_write_half) =
+    let (destination_stream_read_half, destination_stream_write_half) =
         io::split(LoggedStream::new(
             destination_stream,
             get_formatter_by_kind(arguments.formatting, arguments.separator.as_str()),
@@ -60,50 +62,61 @@ async fn incoming_connection_handle(arguments: Arguments, source_stream: tokio_n
             ConsoleLogger::new_unchecked("debug"),
         ));
 
-    let destination_stream_handle = tokio::spawn(async move {
-        let mut buffer = BytesMut::with_capacity(2048);
-        'destination_stream_handle: loop {
-            let Ok(read_length) = destination_stream_read_half.read_buf(&mut buffer).await else {
-                break 'destination_stream_handle;
-            };
-            if read_length == 0 {
-                continue 'destination_stream_handle;
-            }
-            let write_result = source_stream_write_half
-                .write(&buffer[0..read_length])
-                .await;
-            let Ok(write_length) = write_result else {
-                break 'destination_stream_handle;
-            };
-            assert_eq!(read_length, write_length);
-            buffer.clear();
-        }
-    });
+    // Relay both directions concurrently, running each to completion. The
+    // source -> destination direction is bounded by the configured idle-read
+    // timeout; the destination -> source direction is not. As each direction ends
+    // (end-of-stream, a read/write error, or — for the source side — an idle
+    // timeout) it shuts down its writer, forwarding the close to that peer; the
+    // other direction keeps relaying until it ends too. Running both to completion
+    // (rather than cancelling the second when the first ends) means data still in
+    // flight in the other direction is delivered instead of dropped — this
+    // correctly handles a peer that half-closes while a response is still pending.
+    tokio::join!(
+        relay(
+            source_stream_read_half,
+            destination_stream_write_half,
+            Some(Duration::from_secs(arguments.timeout)),
+        ),
+        relay(destination_stream_read_half, source_stream_write_half, None),
+    );
+}
 
-    tokio::spawn(async move {
-        let mut buffer = BytesMut::with_capacity(2048);
-        'source_stream_handle: loop {
-            let read_result = timeout(
-                Duration::from_secs(arguments.timeout),
-                source_stream_read_half.read_buf(&mut buffer),
-            )
-            .await;
-            let Ok(Ok(read_length)) = read_result else {
-                destination_stream_handle.abort();
-                break 'source_stream_handle;
-            };
-            if read_length == 0 {
-                continue 'source_stream_handle;
-            }
-            let write_result = destination_stream_write_half
-                .write(&buffer[0..read_length])
-                .await;
-            let Ok(write_length) = write_result else {
-                destination_stream_handle.abort();
-                break 'source_stream_handle;
-            };
-            assert_eq!(read_length, write_length);
-            buffer.clear();
+/// Copy bytes from `reader` to `writer` until the stream ends or an I/O error
+/// occurs, then shut the writer down so the close is forwarded to its peer.
+///
+/// The copy ends when `reader` reaches end-of-stream (`read_buf` yields `Ok(0)`),
+/// when a read or write fails, or — when `read_timeout` is set — when no data
+/// arrives within that timeout. Treating a zero-length read as end-of-stream
+/// (rather than retrying) is what stops a closed peer from being polled in a tight
+/// loop. On return the writer is shut down (a half-close); because the opposite
+/// direction is driven to completion independently, any data still in flight there
+/// is delivered before the connection closes.
+async fn relay<R, W>(mut reader: R, mut writer: W, read_timeout: Option<Duration>)
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut buffer = BytesMut::with_capacity(2048);
+    loop {
+        let read_result = match read_timeout {
+            Some(duration) => match timeout(duration, reader.read_buf(&mut buffer)).await {
+                Ok(read_result) => read_result,
+                Err(_elapsed) => break,
+            },
+            None => reader.read_buf(&mut buffer).await,
+        };
+        let Ok(read_length) = read_result else {
+            break;
+        };
+        if read_length == 0 {
+            break;
         }
-    });
+        if writer.write_all(&buffer[0..read_length]).await.is_err() {
+            break;
+        }
+        buffer.clear();
+    }
+    // Forward the end-of-stream to the peer (half-close). Errors are ignored: the
+    // writer may already be closed by a failed write or by the peer.
+    let _ = writer.shutdown().await;
 }
