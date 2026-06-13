@@ -13,10 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Migrated the codebase to the 2024 edition of Rust.
-- Bumped MSRV from 1.70.0 to 1.85.1
-- Remove lib.rs file and use modules directly in binary to make the crate binary-only. This is intentional to prevent the crate from being used as a library and to clarify that it is only meant to be used as a command-line tool.
-- Use opt-in `include` Cargo.toml property instead of inclusive `exclude` to prevent irrelevant files from being packaged.
+- Migrated the codebase to the Rust 2024 edition.
+- Bumped MSRV from 1.70.0 to 1.85.1.
+- Removed `lib.rs` and used modules directly in the binary to make the crate binary-only. This is intentional to prevent the crate from being used as a library and to clarify that it is only meant to be used as a command-line tool.
+- Switched to the opt-in `include` property in `Cargo.toml` instead of the inclusive `exclude` property to prevent irrelevant files from being packaged.
 
 ### Documentation
 
