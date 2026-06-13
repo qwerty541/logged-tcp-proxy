@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Implemented integration tests for the core connection handling logic in `src/tests.rs`. These tests cover various scenarios of client-server interactions through the proxy, including normal data relay, connection drops, and error handling.
+- Implemented integration tests for the core connection handling logic in `src/tests.rs`. These tests cover client-server interactions through the proxy, including normal data relay, multiple sequential messages, and multiple concurrent clients.
 
 ### Changed
 
