@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Implemented integration tests for the core connection handling logic in `src/tests.rs`. These tests cover client-server interactions through the proxy, including normal data relay, multiple sequential messages, multiple concurrent clients, concurrent bidirectional (full-duplex) transfer, connection teardown, and client half-close.
+- Added a black-box integration test (`scripts/integration_test.py`) that runs the compiled binary end to end, verifying that traffic is relayed both ways and that the payload is printed to the console in the requested format. It runs in a dedicated CI job and can be run locally with `python3 scripts/integration_test.py`.
 
 ### Changed
 
