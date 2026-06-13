@@ -56,6 +56,9 @@ All source lives in `src/`:
 - [`src/tests.rs`](src/tests.rs) — in-crate integration tests, compiled only
   under `#[cfg(test)]` (declared as `mod tests;` from `main.rs`). See
   [Testing](#testing).
+- [`scripts/integration_test.py`](scripts/integration_test.py) — a black-box
+  integration test that drives the **compiled binary** end to end (lives outside
+  `src/` and is not part of the published crate). See [Testing](#testing).
 
 ## How a proxied connection works
 
@@ -129,7 +132,28 @@ cargo fmt --check                         # rustfmt.toml: imports_granularity="I
 cargo msrv find                           # verify MSRV (requires cargo-msrv)
 ```
 
+## Definition of done for code changes
+
+Any change that alters behavior, the CLI, or the architecture must, **in the same
+change**, also do the following — this is the default expectation and does not
+need to be requested each time:
+
+- **Tests** — add or update coverage so the new behavior is exercised and
+  regressions are caught: the in-crate tests in [`src/tests.rs`](src/tests.rs)
+  and/or the black-box [`scripts/integration_test.py`](scripts/integration_test.py).
+- **Docs** — update this `CLAUDE.md` and [`README.md`](README.md) wherever they
+  describe what changed (behavior, CLI options, architecture).
+- **Changelog** — add a user-facing entry under `## Unreleased` in
+  [`CHANGELOG.md`](CHANGELOG.md) (Keep a Changelog format) for anything worth
+  mentioning to users.
+- **Checks** — run the full set above (`build --all-targets`, `test`, `clippy`,
+  `fmt --check`) and keep it green.
+
 ## Testing
+
+There are two layers of tests, both runnable locally and in CI.
+
+### In-crate tests (`cargo test`)
 
 Integration tests live **inside the crate** in [`src/tests.rs`](src/tests.rs)
 under `#[cfg(test)]`, rather than in a top-level `tests/` directory. This is a
@@ -138,18 +162,38 @@ deliberate choice: a `tests/` directory can only exercise a crate's public
 library surface on docs.rs. Keeping the tests in-crate lets them call internal
 (`pub(crate)`) functions directly while the package stays binary-only.
 
-The tests are fully self-contained and portable:
+They are fully self-contained and portable:
 
-- Each test spins up its own minimal **echo server** written with plain Tokio
-  (no external tools like `python`/`netcat`, no extra dev-dependencies).
-- Both the echo server and the proxy listener bind to `127.0.0.1:0`, letting the
-  OS assign ephemeral ports — so parallel test/CI jobs never collide and there
-  are no hardcoded ports. Always use the literal `127.0.0.1` (not `localhost`,
-  which can resolve to IPv6 on Windows).
+- Each test spins up its own minimal **echo server** (and, where needed, a fake
+  remote) written with plain Tokio — no external tools, no extra dev-dependencies.
+- The echo server, the proxy listener, and any fake remote bind to `127.0.0.1:0`,
+  letting the OS assign ephemeral ports — so parallel test/CI jobs never collide
+  and there are no hardcoded ports. Always use the literal `127.0.0.1` (not
+  `localhost`, which can resolve to IPv6 on Windows).
 - All network I/O is wrapped in `tokio::time::timeout`, so tests fail fast
-  instead of hanging and avoid `sleep`-based flakiness.
-- Tests run via `cargo test`, identically on the developer machine and in CI
+  instead of hanging and avoid `sleep`-based flakiness. Per-connection cleanup is
+  automatic, so tests do not need to stop the proxy explicitly; the accept loop is
+  cancelled when the test runtime is dropped.
+- They run via `cargo test`, identically on the developer machine and in CI
   (ubuntu/macos/windows × stable/beta/nightly).
+
+### Black-box binary test (`scripts/integration_test.py`)
+
+[`scripts/integration_test.py`](scripts/integration_test.py) exercises the
+**compiled binary** end to end — something the in-crate tests cannot do. It starts
+an echo server, runs the proxy binary between a client and that echo server, and
+asserts both that bytes are relayed in both directions **and** that the proxy
+prints the payload to the console in the requested format (it checks `lowerhex`
+and `upperhex`). It uses only the Python standard library, so it runs the same on
+Linux/macOS/Windows. Run it manually with:
+
+```sh
+python3 scripts/integration_test.py
+```
+
+By default it builds the debug binary first; set `LOGGED_TCP_PROXY_BIN` to a
+prebuilt binary to skip the build. In CI it runs as the dedicated `integration`
+job.
 
 ## Continuous integration
 
@@ -160,6 +204,8 @@ The tests are fully self-contained and portable:
 - **fmt** — `cargo fmt --check`.
 - **build_and_test** — `cargo build --all-targets` then `cargo test` on
   ubuntu/macos/windows × stable/beta/nightly.
+- **integration** — builds the binary and runs the black-box
+  [`scripts/integration_test.py`](scripts/integration_test.py) on ubuntu.
 - **msrv** — `cargo msrv find` to verify the minimal supported Rust version.
 
 Other workflows are housekeeping: `labeler.yml` (PR labels) and
