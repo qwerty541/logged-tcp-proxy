@@ -10,8 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - The proxy now shuts down gracefully on Ctrl-C (SIGINT): it stops accepting connections, closes in-flight connections, and exits cleanly with status `0`.
-- Implemented integration tests for the core connection handling logic in `src/tests.rs`. These tests cover client-server interactions through the proxy, including normal data relay, multiple sequential messages, multiple concurrent clients, concurrent bidirectional (full-duplex) transfer, connection teardown, and client half-close.
-- Added a black-box integration test (`scripts/integration_test.py`) that runs the compiled binary end to end, verifying that traffic is relayed both ways and that the payload is printed to the console in the requested format, as well as graceful handling of an unreachable remote, a listener bind failure, and Ctrl-C shutdown.
+- Added an integration test suite — in-crate relay tests (`src/tests.rs`) and a black-box test of the compiled binary (`scripts/integration_test.py`) — covering data relay, teardown, concurrency, error handling, Ctrl-C shutdown, and real HTTP/MODBUS exchanges.
 
 ### Changed
 
