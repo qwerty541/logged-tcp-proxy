@@ -128,6 +128,13 @@ valid level, so they cannot panic at runtime.)
   `UppercaseHexadecimalFormatter`, `BinaryFormatter`, `OctalFormatter`),
   `ConsoleLogger`, `DefaultFilter`, `RecordKindFilter`, and `RecordKind`.
 
+Dev-dependencies (test-only; not compiled into the published binary and irrelevant
+to its users):
+
+- `tokio-modbus` (`default-features = false`, `["tcp", "tcp-server"]`) — a real
+  MODBUS TCP server + client for the real-protocol relay test.
+- `tiny_http` — a small real HTTP/1.1 server for the real-protocol relay test.
+
 ## CLI options
 
 ```
@@ -187,8 +194,13 @@ library surface on docs.rs. Keeping the tests in-crate lets them call internal
 
 They are fully self-contained and portable:
 
-- Each test spins up its own minimal **echo server** (and, where needed, a fake
-  remote) written with plain Tokio — no external tools, no extra dev-dependencies.
+- Most tests spin up their own minimal **echo server** (and, where needed, a fake
+  remote) written with plain Tokio — no external tools. Two tests additionally
+  prove the proxy relays **real protocol traffic** (its actual use case): a real
+  MODBUS TCP exchange via the `tokio-modbus` server + client, and a real HTTP/1.1
+  exchange via a `tiny_http` server (these are the only dev-dependencies). The
+  proxy itself never parses these protocols — it is a transparent byte relay — so
+  these are realism/use-case tests rather than new code coverage.
 - The echo server, the proxy listener, and any fake remote bind to `127.0.0.1:0`,
   letting the OS assign ephemeral ports — so parallel test/CI jobs never collide
   and there are no hardcoded ports. Always use the literal `127.0.0.1` (not
@@ -210,13 +222,18 @@ covers several cases:
 - **relay + logging** — bytes are relayed both ways **and** the proxy prints the
   payload to the console in the requested format (checked for `lowerhex` and
   `upperhex`).
+- **real HTTP** — a real request/response (stdlib `http.server` + `urllib`) is
+  relayed through the proxy.
+- **real MODBUS** — a real MODBUS TCP read-holding-registers exchange (frames
+  hand-built with `struct`) is relayed, and the proxy is checked to have logged
+  the request frame in hex.
 - **unreachable remote** — with the remote down, the proxy logs the failure,
   closes the client cleanly, keeps serving, and does not print a panic.
 - **bind failure** — binding an in-use address exits non-zero without panicking.
 - **Ctrl-C** — SIGINT shuts the proxy down with exit code `0` (POSIX only).
 
-It uses only the Python standard library, so it runs the same on
-Linux/macOS/Windows. Run it manually with:
+It uses only the Python standard library (no `pip` packages), so it runs the same
+on Linux/macOS/Windows. Run it manually with:
 
 ```sh
 python3 scripts/integration_test.py
