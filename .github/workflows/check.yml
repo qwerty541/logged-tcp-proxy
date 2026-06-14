@@ -110,8 +110,12 @@ jobs:
 
   integration:
     name: Binary integration test
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    runs-on: ${{ matrix.os }}-latest
+    timeout-minutes: 15
+
+    strategy:
+      matrix:
+        os: [ubuntu, macos, windows]
 
     steps:
       - name: Checkout
@@ -123,10 +127,13 @@ jobs:
           toolchain: stable
 
       # Builds the binary and exercises it end to end (relay + console output)
-      # via the standard-library Python script. Python 3 is preinstalled on the
-      # ubuntu runner.
+      # via the standard-library Python script. Python 3 is preinstalled on every
+      # runner; it is `python3` on the Unix runners and `python` on Windows.
       - name: Run black-box integration test
-        run: python3 scripts/integration_test.py
+        shell: bash
+        run: |
+          python="$(command -v python3 || command -v python)"
+          "$python" scripts/integration_test.py
 
   msrv:
     name: Check minimal supported rust version (MSRV).

@@ -351,7 +351,9 @@ def test_http(binary):
         if not wait_for_listener(proxy_port):
             fail("[http] proxy did not start listening")
         url = "http://%s:%d/" % (HOST, proxy_port)
-        with urllib.request.urlopen(url, timeout=IO_TIMEOUT) as response:
+        # Talk to the proxy directly, ignoring any HTTP_PROXY in the environment.
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(url, timeout=IO_TIMEOUT) as response:
             status = response.status
             received = response.read()
         if status != 200:

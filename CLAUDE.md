@@ -253,7 +253,8 @@ job.
 - **build_and_test** — `cargo build --all-targets` then `cargo test` on
   ubuntu/macos/windows × stable/beta/nightly.
 - **integration** — builds the binary and runs the black-box
-  [`scripts/integration_test.py`](scripts/integration_test.py) on ubuntu.
+  [`scripts/integration_test.py`](scripts/integration_test.py) on
+  ubuntu/macos/windows (the Ctrl-C case is skipped on Windows).
 - **msrv** — `cargo msrv find` to verify the minimal supported Rust version.
 
 Other workflows are housekeeping: `labeler.yml` (PR labels) and
