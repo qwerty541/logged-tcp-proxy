@@ -41,8 +41,11 @@ All source lives in `src/`:
     `get_formatter_by_kind`.
   - `TimestampPrecision` → converts into `env_logger`'s timestamp precision.
 - [`src/conn.rs`](src/conn.rs) — the networking core:
-  - `initialize_tcp_listener(arguments)` (`pub`) — binds the `TcpListener`,
-    logs that it is ready, then runs the accept loop.
+  - `initialize_tcp_listener(arguments)` (`pub`, returns `io::Result<()>`) — binds
+    the `TcpListener` (returning `Err` on a bind failure instead of panicking),
+    logs that it is ready, then serves until interrupted: a `tokio::select!` runs
+    the accept loop alongside `tokio::signal::ctrl_c()`, so Ctrl-C stops the
+    listener and returns `Ok(())` for a clean exit.
   - `run_accept_loop(listener, arguments)` (`pub(crate)`) — the accept loop:
     for each accepted connection it logs the peer address and spawns
     `incoming_connection_handle`. Extracted from `initialize_tcp_listener` so it
@@ -66,8 +69,10 @@ All source lives in `src/`:
 
 1. Wraps the accepted client socket ("source") in a `logged_stream::LoggedStream`
    and `tokio::io::split`s it into read/write halves.
-2. Connects a fresh `TcpStream` to `arguments.remote_addr` ("destination"),
-   wraps it in another `LoggedStream`, and splits it too.
+2. Connects a fresh `TcpStream` to `arguments.remote_addr` ("destination"). If the
+   connect fails it logs the error and **returns** (no panic); dropping the source
+   halves closes the already-accepted client connection cleanly. On success it
+   wraps the stream in another `LoggedStream` and splits it.
 3. Relays both directions concurrently with `tokio::join!` over two `relay`
    futures (one connection task, not two spawned per-direction tasks), running
    each direction to completion:
@@ -92,10 +97,28 @@ deliberately does **not** re-log payload, because those bytes are the same ones
 already shown on the source side. This avoids printing every byte twice. The
 console sink is `ConsoleLogger` at the `"debug"` label.
 
+### Error handling and shutdown
+
+Runtime failures are handled gracefully rather than by panicking:
+
+- **Bind failure** (e.g. the listen address is in use) — logged, and
+  `initialize_tcp_listener` returns `Err`; `main` then exits with status `1`.
+- **Destination connect failure** — logged; that one connection is dropped
+  cleanly (closing the client), the listener keeps serving other clients.
+- **Per-connection relay errors** — end that direction and tear the connection
+  down (see the relay description above); they never abort the process.
+- **Ctrl-C (SIGINT)** — stops the accept loop; in-flight connections are closed as
+  the runtime shuts down and the process exits `0`. No ports or connections are
+  left behind after exit.
+
+(The `ConsoleLogger::new_unchecked("debug")` calls take a compile-time-constant,
+valid level, so they cannot panic at runtime.)
+
 ## Dependencies
 
 - `tokio` (with `default-features = false` and only `io-util`, `macros`, `net`,
-  `rt-multi-thread`, `time`) — async runtime, TCP, `timeout`, I/O traits.
+  `rt-multi-thread`, `signal`, `time`) — async runtime, TCP, `timeout`, I/O
+  traits, and `ctrl_c` for graceful shutdown.
 - `clap` (`std`, `derive`) — CLI parsing.
 - `env_logger` + `log` — logging frontend/facade.
 - `bytes` — `BytesMut` relay buffers.
@@ -182,9 +205,17 @@ They are fully self-contained and portable:
 [`scripts/integration_test.py`](scripts/integration_test.py) exercises the
 **compiled binary** end to end — something the in-crate tests cannot do. It starts
 an echo server, runs the proxy binary between a client and that echo server, and
-asserts both that bytes are relayed in both directions **and** that the proxy
-prints the payload to the console in the requested format (it checks `lowerhex`
-and `upperhex`). It uses only the Python standard library, so it runs the same on
+covers several cases:
+
+- **relay + logging** — bytes are relayed both ways **and** the proxy prints the
+  payload to the console in the requested format (checked for `lowerhex` and
+  `upperhex`).
+- **unreachable remote** — with the remote down, the proxy logs the failure,
+  closes the client cleanly, keeps serving, and does not print a panic.
+- **bind failure** — binding an in-use address exits non-zero without panicking.
+- **Ctrl-C** — SIGINT shuts the proxy down with exit code `0` (POSIX only).
+
+It uses only the Python standard library, so it runs the same on
 Linux/macOS/Windows. Run it manually with:
 
 ```sh
