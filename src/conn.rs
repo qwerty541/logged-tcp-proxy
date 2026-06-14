@@ -15,14 +15,36 @@ use tokio::io::{self};
 use tokio::net as tokio_net;
 use tokio::time::timeout;
 
-pub async fn initialize_tcp_listener(arguments: Arguments) {
-    let listener = tokio_net::TcpListener::bind(arguments.bind_listener_addr)
-        .await
-        .expect("Failed to bind tcp listener");
+pub async fn initialize_tcp_listener(arguments: Arguments) -> io::Result<()> {
+    let listener = match tokio_net::TcpListener::bind(arguments.bind_listener_addr).await {
+        Ok(listener) => listener,
+        Err(error) => {
+            log::error!(
+                "Failed to bind listener on {}: {error}",
+                arguments.bind_listener_addr
+            );
+            return Err(error);
+        }
+    };
 
-    log::info!("Listener binded, waiting for incoming connections...");
+    log::info!(
+        "Listener bound to {}, waiting for incoming connections...",
+        arguments.bind_listener_addr
+    );
 
-    run_accept_loop(listener, arguments).await;
+    // Serve until interrupted. `run_accept_loop` never returns on its own, so the
+    // `select!` runs the accept loop until Ctrl-C (SIGINT) fires, then stops
+    // accepting. Dropping the accept-loop future closes the listener and releases
+    // the port; in-flight connections are torn down when the runtime shuts down.
+    tokio::select! {
+        _ = run_accept_loop(listener, arguments) => {}
+        result = tokio::signal::ctrl_c() => match result {
+            Ok(()) => log::info!("Received shutdown signal, stopping listener."),
+            Err(error) => log::error!("Failed to listen for shutdown signal: {error}"),
+        },
+    }
+
+    Ok(())
 }
 
 /// Accept connections on an already-bound listener and spawn a relay handler for
@@ -51,9 +73,17 @@ async fn incoming_connection_handle(arguments: Arguments, source_stream: tokio_n
         DefaultFilter,
         ConsoleLogger::new_unchecked("debug"),
     ));
-    let destination_stream = tokio_net::TcpStream::connect(arguments.remote_addr)
-        .await
-        .expect("Failed to connect to destination address");
+    let destination_stream = match tokio_net::TcpStream::connect(arguments.remote_addr).await {
+        Ok(stream) => stream,
+        Err(error) => {
+            log::error!(
+                "Failed to connect to destination {}: {error}",
+                arguments.remote_addr
+            );
+            // Returning drops the source halves, closing the client connection.
+            return;
+        }
+    };
     let (destination_stream_read_half, destination_stream_write_half) =
         io::split(LoggedStream::new(
             destination_stream,

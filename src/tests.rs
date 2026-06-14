@@ -11,6 +11,7 @@ use crate::args::Arguments;
 use crate::args::LoggingLevel;
 use crate::args::PayloadFormatingKind;
 use crate::args::TimestampPrecision;
+use crate::conn::initialize_tcp_listener;
 use crate::conn::run_accept_loop;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -370,5 +371,50 @@ async fn relays_both_directions_concurrently() {
     assert!(
         from_client == to_remote,
         "client -> remote payload corrupted"
+    );
+}
+
+/// Binding the listener to an address that is already in use returns an error
+/// instead of panicking, so the binary can exit cleanly on a fatal startup error.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bind_failure_returns_error() {
+    // Hold an active listener so the proxy's bind to the same address fails.
+    let occupier = TcpListener::bind(LOOPBACK)
+        .await
+        .expect("failed to bind occupier");
+    let in_use_addr = occupier.local_addr().expect("occupier local_addr");
+
+    // `remote_addr` is irrelevant: the bind fails before any connection is served.
+    let result = initialize_tcp_listener(test_arguments(in_use_addr, in_use_addr)).await;
+
+    assert!(
+        result.is_err(),
+        "binding to an in-use address should return an error, not panic"
+    );
+}
+
+/// When the remote is unreachable, the proxy must not panic: it logs the failure
+/// and closes the already-accepted client connection cleanly (the client's read
+/// returns end-of-stream rather than hanging).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unreachable_remote_closes_client_cleanly() {
+    // Reserve a port, then release it so nothing is listening there.
+    let dead = TcpListener::bind(LOOPBACK)
+        .await
+        .expect("failed to bind to reserve a dead port");
+    let dead_remote_addr = dead.local_addr().expect("dead local_addr");
+    drop(dead);
+
+    let proxy_addr = spawn_proxy(dead_remote_addr).await;
+
+    let mut client = connect(proxy_addr).await;
+    let mut buffer = [0u8; 16];
+    let read_length = timeout(IO_TIMEOUT, client.read(&mut buffer))
+        .await
+        .expect("client read timed out: proxy did not close the connection after a failed remote connect")
+        .expect("client read errored");
+    assert_eq!(
+        read_length, 0,
+        "expected end-of-stream after the proxy failed to reach the remote"
     );
 }
