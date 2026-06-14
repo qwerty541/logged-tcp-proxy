@@ -9,8 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The proxy now shuts down gracefully on Ctrl-C (SIGINT): it stops accepting connections, closes in-flight connections, and exits cleanly with status `0`.
 - Implemented integration tests for the core connection handling logic in `src/tests.rs`. These tests cover client-server interactions through the proxy, including normal data relay, multiple sequential messages, multiple concurrent clients, concurrent bidirectional (full-duplex) transfer, connection teardown, and client half-close.
-- Added a black-box integration test (`scripts/integration_test.py`) that runs the compiled binary end to end, verifying that traffic is relayed both ways and that the payload is printed to the console in the requested format. It runs in a dedicated CI job and can be run locally with `python3 scripts/integration_test.py`.
+- Added a black-box integration test (`scripts/integration_test.py`) that runs the compiled binary end to end, verifying that traffic is relayed both ways and that the payload is printed to the console in the requested format, as well as graceful handling of an unreachable remote, a listener bind failure, and Ctrl-C shutdown.
 
 ### Changed
 
@@ -23,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Fixed a defect where closing or half-closing a proxied connection could make the proxy spin at 100% CPU on one core; end-of-stream is now handled cleanly and the connection is torn down.
 - A close on one side of a proxied connection is now forwarded to the other side (graceful shutdown), and each direction keeps relaying until it ends, so a response that is still arriving when the client finishes sending is no longer dropped.
+- The proxy no longer panics and abruptly drops a client when it cannot reach the destination: the connect failure is logged, that client connection is closed cleanly, and the listener keeps serving other clients.
+- The proxy no longer panics on a listener bind failure (for example when the address is already in use); it logs the error and exits with a non-zero status.
 
 ### Documentation
 
