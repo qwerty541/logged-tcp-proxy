@@ -126,6 +126,21 @@ jobs:
         with:
           toolchain: stable
 
+      # Reuse the `stable` build cache that the build_and_test job populates (same
+      # key format and Cargo.lock), so the script's `cargo build` starts warm.
+      # Restore only — build_and_test owns writing this cache.
+      - name: Restore build cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: |
+            ~/.cargo
+            target
+          key: ${{ matrix.os }}-stable-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ matrix.os }}-stable-${{ hashFiles('**/Cargo.lock') }}
+            ${{ matrix.os }}-stable-
+          enableCrossOsArchive: true
+
       # Builds the binary and exercises it end to end (relay + console output)
       # via the standard-library Python script. Python 3 is preinstalled on every
       # runner; it is `python3` on the Unix runners and `python` on Windows.
