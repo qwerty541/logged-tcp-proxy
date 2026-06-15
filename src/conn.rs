@@ -27,10 +27,8 @@ pub async fn initialize_tcp_listener(arguments: Arguments) -> io::Result<()> {
         }
     };
 
-    log::info!(
-        "Listener bound to {}, waiting for incoming connections...",
-        arguments.bind_listener_addr
-    );
+    let bound_addr = listener.local_addr()?;
+    log::info!("Listener bound to {bound_addr}, waiting for incoming connections...");
 
     // Serve until interrupted. `run_accept_loop` never returns on its own, so the
     // `select!` runs the accept loop until Ctrl-C (SIGINT) fires, then stops
