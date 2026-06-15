@@ -19,5 +19,9 @@ async fn main() {
         .format_timestamp(Some(From::from(arguments.precision)))
         .init();
 
-    initialize_tcp_listener(arguments).await;
+    // A fatal startup failure (e.g. the listener address is unavailable) is logged
+    // inside `initialize_tcp_listener`; exit non-zero so callers/scripts notice.
+    if initialize_tcp_listener(arguments).await.is_err() {
+        std::process::exit(1);
+    }
 }

@@ -11,6 +11,7 @@ use crate::args::Arguments;
 use crate::args::LoggingLevel;
 use crate::args::PayloadFormatingKind;
 use crate::args::TimestampPrecision;
+use crate::conn::initialize_tcp_listener;
 use crate::conn::run_accept_loop;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -18,8 +19,14 @@ use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
-use tokio::task::JoinHandle;
 use tokio::time::timeout;
+use tokio_modbus::ExceptionCode;
+use tokio_modbus::Request as ModbusRequest;
+use tokio_modbus::Response as ModbusResponse;
+use tokio_modbus::client::Reader;
+use tokio_modbus::server::Service as ModbusService;
+use tokio_modbus::server::tcp::Server as ModbusServer;
+use tokio_modbus::server::tcp::accept_tcp_connection;
 
 /// Upper bound for any single network operation in the tests. Generous enough to
 /// avoid flakiness on a loaded CI runner, small enough to fail fast on a hang.
@@ -72,16 +79,21 @@ async fn spawn_echo_server() -> SocketAddr {
     addr
 }
 
-/// Bind a proxy listener on an ephemeral loopback port and start its accept
-/// loop. Returns the proxy's bound address and the accept-loop task handle (abort
-/// it to stop the proxy).
-async fn spawn_proxy(remote_addr: SocketAddr) -> (SocketAddr, JoinHandle<()>) {
+/// Bind a proxy listener on an ephemeral loopback port and start its accept loop
+/// in the background. Returns the proxy's bound address.
+///
+/// There is no handle to stop it: the accept loop is intentionally infinite (a
+/// proxy keeps listening), and per-connection cleanup is automatic — each
+/// connection's relay tasks and sockets are released when it closes. The accept
+/// loop itself is cancelled when the test's runtime is dropped at the end of the
+/// test, which also releases the ephemeral port.
+async fn spawn_proxy(remote_addr: SocketAddr) -> SocketAddr {
     let listener = TcpListener::bind(LOOPBACK)
         .await
         .expect("failed to bind proxy");
     let addr = listener.local_addr().expect("proxy local_addr");
-    let handle = tokio::spawn(run_accept_loop(listener, test_arguments(addr, remote_addr)));
-    (addr, handle)
+    tokio::spawn(run_accept_loop(listener, test_arguments(addr, remote_addr)));
+    addr
 }
 
 /// Connect a client to `addr`, bounded by [`IO_TIMEOUT`].
@@ -117,12 +129,10 @@ async fn assert_round_trip(client: &mut TcpStream, payload: &[u8]) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn relays_payload_through_remote() {
     let echo_addr = spawn_echo_server().await;
-    let (proxy_addr, proxy) = spawn_proxy(echo_addr).await;
+    let proxy_addr = spawn_proxy(echo_addr).await;
 
     let mut client = connect(proxy_addr).await;
     assert_round_trip(&mut client, b"Hello, MODBUS!").await;
-
-    proxy.abort();
 }
 
 /// The relay keeps forwarding across many sequential request/response cycles on a
@@ -130,21 +140,19 @@ async fn relays_payload_through_remote() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn relays_multiple_sequential_messages() {
     let echo_addr = spawn_echo_server().await;
-    let (proxy_addr, proxy) = spawn_proxy(echo_addr).await;
+    let proxy_addr = spawn_proxy(echo_addr).await;
 
     let mut client = connect(proxy_addr).await;
     for round in 0..16u8 {
         assert_round_trip(&mut client, &[round; 32]).await;
     }
-
-    proxy.abort();
 }
 
 /// Many clients connected at once are each proxied independently and correctly.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn handles_multiple_concurrent_clients() {
     let echo_addr = spawn_echo_server().await;
-    let (proxy_addr, proxy) = spawn_proxy(echo_addr).await;
+    let proxy_addr = spawn_proxy(echo_addr).await;
 
     let mut clients = Vec::new();
     for i in 0..16u8 {
@@ -159,6 +167,388 @@ async fn handles_multiple_concurrent_clients() {
     for client in clients {
         client.await.expect("client task panicked");
     }
+}
 
-    proxy.abort();
+/// When the client closes its connection, the proxy forwards that close to the
+/// remote instead of holding the remote half open (a regression guard for the
+/// end-of-stream handling in the relay).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn closing_client_propagates_to_remote() {
+    // A remote that accepts one connection, drains until end-of-stream, then
+    // returns. The task completing is the observable signal that the proxy
+    // forwarded the client's close.
+    let listener = TcpListener::bind(LOOPBACK)
+        .await
+        .expect("failed to bind remote");
+    let remote_addr = listener.local_addr().expect("remote local_addr");
+    let remote = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("remote accept");
+        let mut buffer = [0u8; 4096];
+        loop {
+            match stream.read(&mut buffer).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
+    });
+
+    let proxy_addr = spawn_proxy(remote_addr).await;
+
+    let mut client = connect(proxy_addr).await;
+    timeout(IO_TIMEOUT, client.write_all(b"ping"))
+        .await
+        .expect("write timed out")
+        .expect("failed to write to proxy");
+    timeout(IO_TIMEOUT, client.shutdown())
+        .await
+        .expect("shutdown timed out")
+        .expect("failed to close client");
+
+    timeout(IO_TIMEOUT, remote)
+        .await
+        .expect("remote still open: proxy did not forward the client close")
+        .expect("remote task panicked");
+}
+
+/// When the remote closes its connection, the proxy forwards that close to the
+/// client: the client's read returns end-of-stream instead of hanging forever.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn closing_remote_propagates_to_client() {
+    // A remote that closes immediately after accepting the proxy's connection.
+    let listener = TcpListener::bind(LOOPBACK)
+        .await
+        .expect("failed to bind remote");
+    let remote_addr = listener.local_addr().expect("remote local_addr");
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("remote accept");
+        drop(stream);
+    });
+
+    let proxy_addr = spawn_proxy(remote_addr).await;
+
+    let mut client = connect(proxy_addr).await;
+    let mut buffer = [0u8; 16];
+    let read_length = timeout(IO_TIMEOUT, client.read(&mut buffer))
+        .await
+        .expect("client read timed out: proxy did not forward the remote close")
+        .expect("client read errored");
+    assert_eq!(
+        read_length, 0,
+        "expected end-of-stream after the remote closed"
+    );
+}
+
+/// A client may finish sending (half-close its write side) while still waiting for
+/// the remote's response. The proxy must keep relaying the remote -> client
+/// direction until the remote is done, rather than tearing the whole connection
+/// down when the client's send side ends — which would truncate the response.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn half_closed_client_still_receives_response() {
+    const RESPONSE: &[u8] = b"RESPONSE-AFTER-HALF-CLOSE";
+
+    // A remote that reads the request until end-of-stream (the client's half-close,
+    // forwarded by the proxy), then sends its response and closes.
+    let listener = TcpListener::bind(LOOPBACK)
+        .await
+        .expect("failed to bind remote");
+    let remote_addr = listener.local_addr().expect("remote local_addr");
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("remote accept");
+        let mut scratch = [0u8; 1024];
+        loop {
+            match stream.read(&mut scratch).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
+        stream
+            .write_all(RESPONSE)
+            .await
+            .expect("remote failed to write response");
+        stream.shutdown().await.expect("remote failed to shut down");
+    });
+
+    let proxy_addr = spawn_proxy(remote_addr).await;
+
+    let mut client = connect(proxy_addr).await;
+    timeout(IO_TIMEOUT, client.write_all(b"REQUEST"))
+        .await
+        .expect("write timed out")
+        .expect("failed to write request");
+    // Finish sending, but keep the read side open for the response.
+    timeout(IO_TIMEOUT, client.shutdown())
+        .await
+        .expect("shutdown timed out")
+        .expect("failed to half-close client");
+
+    let mut response = Vec::new();
+    timeout(IO_TIMEOUT, client.read_to_end(&mut response))
+        .await
+        .expect("read timed out")
+        .expect("failed to read response");
+
+    assert_eq!(
+        response, RESPONSE,
+        "the full remote response must arrive after a client half-close"
+    );
+}
+
+/// Both directions are relayed concurrently: a large payload flowing
+/// client -> remote does not block a large payload flowing remote -> client at the
+/// same time. Each payload is larger than the socket buffers, so if the two
+/// directions were serialized this full-duplex exchange would dead-lock once the
+/// buffers fill; instead both transfers complete.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn relays_both_directions_concurrently() {
+    const LEN: usize = 1 << 20; // 1 MiB per direction.
+    let to_remote = vec![0xA5u8; LEN];
+    let to_client = vec![0x5Au8; LEN];
+
+    // A remote that simultaneously sends `to_client` and drains everything the
+    // client sends, returning what it received.
+    let listener = TcpListener::bind(LOOPBACK)
+        .await
+        .expect("failed to bind remote");
+    let remote_addr = listener.local_addr().expect("remote local_addr");
+    let server_payload = to_client.clone();
+    let remote = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("remote accept");
+        let (mut read_half, mut write_half) = stream.into_split();
+        let send = tokio::spawn(async move {
+            write_half
+                .write_all(&server_payload)
+                .await
+                .expect("remote failed to write");
+            write_half
+                .shutdown()
+                .await
+                .expect("remote failed to shut down");
+        });
+        let mut received = Vec::new();
+        read_half
+            .read_to_end(&mut received)
+            .await
+            .expect("remote failed to read");
+        send.await.expect("remote send task panicked");
+        received
+    });
+
+    let proxy_addr = spawn_proxy(remote_addr).await;
+
+    let client = connect(proxy_addr).await;
+    let (mut client_read, mut client_write) = client.into_split();
+    let client_payload = to_remote.clone();
+    let client_send = tokio::spawn(async move {
+        client_write
+            .write_all(&client_payload)
+            .await
+            .expect("client failed to write");
+        client_write
+            .shutdown()
+            .await
+            .expect("client failed to shut down");
+    });
+
+    let mut from_remote = Vec::new();
+    timeout(IO_TIMEOUT, client_read.read_to_end(&mut from_remote))
+        .await
+        .expect("client read timed out")
+        .expect("client failed to read");
+    client_send.await.expect("client send task panicked");
+
+    let from_client = timeout(IO_TIMEOUT, remote)
+        .await
+        .expect("remote timed out")
+        .expect("remote task panicked");
+
+    assert_eq!(
+        from_remote.len(),
+        LEN,
+        "client should receive the full remote payload"
+    );
+    assert!(
+        from_remote == to_client,
+        "remote -> client payload corrupted"
+    );
+    assert_eq!(
+        from_client.len(),
+        LEN,
+        "remote should receive the full client payload"
+    );
+    assert!(
+        from_client == to_remote,
+        "client -> remote payload corrupted"
+    );
+}
+
+/// Binding the listener to an address that is already in use returns an error
+/// instead of panicking, so the binary can exit cleanly on a fatal startup error.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bind_failure_returns_error() {
+    // Hold an active listener so the proxy's bind to the same address fails.
+    let occupier = TcpListener::bind(LOOPBACK)
+        .await
+        .expect("failed to bind occupier");
+    let in_use_addr = occupier.local_addr().expect("occupier local_addr");
+
+    // `remote_addr` is irrelevant: the bind fails before any connection is served.
+    let result = initialize_tcp_listener(test_arguments(in_use_addr, in_use_addr)).await;
+
+    assert!(
+        result.is_err(),
+        "binding to an in-use address should return an error, not panic"
+    );
+}
+
+/// When the remote is unreachable, the proxy must not panic: it logs the failure
+/// and closes the already-accepted client connection cleanly (the client's read
+/// returns end-of-stream rather than hanging).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unreachable_remote_closes_client_cleanly() {
+    // Reserve a port, then release it so nothing is listening there.
+    let dead = TcpListener::bind(LOOPBACK)
+        .await
+        .expect("failed to bind to reserve a dead port");
+    let dead_remote_addr = dead.local_addr().expect("dead local_addr");
+    drop(dead);
+
+    let proxy_addr = spawn_proxy(dead_remote_addr).await;
+
+    let mut client = connect(proxy_addr).await;
+    let mut buffer = [0u8; 16];
+    let read_length = timeout(IO_TIMEOUT, client.read(&mut buffer))
+        .await
+        .expect("client read timed out: proxy did not close the connection after a failed remote connect")
+        .expect("client read errored");
+    assert_eq!(
+        read_length, 0,
+        "expected end-of-stream after the proxy failed to reach the remote"
+    );
+}
+
+/// A real Modbus TCP exchange is relayed through the proxy: a `tokio-modbus`
+/// client reads holding registers from a real `tokio-modbus` server sitting
+/// behind the proxy and receives the expected values. This exercises the proxy
+/// with genuine MODBUS framing (its original use case), not just dummy bytes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn relays_a_real_modbus_exchange() {
+    const REGISTERS: [u16; 4] = [0x1111, 0x2222, 0x3333, 0x4444];
+
+    // A minimal real Modbus server that serves `REGISTERS` for read-holding-registers.
+    struct Service;
+    impl ModbusService for Service {
+        type Request = ModbusRequest<'static>;
+        type Response = ModbusResponse;
+        type Exception = ExceptionCode;
+        type Future = std::future::Ready<Result<Self::Response, Self::Exception>>;
+
+        fn call(&self, request: Self::Request) -> Self::Future {
+            let response = match request {
+                ModbusRequest::ReadHoldingRegisters(addr, cnt) => {
+                    let start = addr as usize;
+                    let end = start + cnt as usize;
+                    if end <= REGISTERS.len() {
+                        Ok(ModbusResponse::ReadHoldingRegisters(
+                            REGISTERS[start..end].to_vec(),
+                        ))
+                    } else {
+                        Err(ExceptionCode::IllegalDataAddress)
+                    }
+                }
+                _ => Err(ExceptionCode::IllegalFunction),
+            };
+            std::future::ready(response)
+        }
+    }
+
+    let listener = TcpListener::bind(LOOPBACK)
+        .await
+        .expect("failed to bind modbus server");
+    let modbus_addr = listener.local_addr().expect("modbus local_addr");
+    tokio::spawn(async move {
+        let server = ModbusServer::new(listener);
+        let new_service = |_socket_addr| Ok(Some(Service));
+        let on_connected = move |stream, socket_addr| async move {
+            accept_tcp_connection(stream, socket_addr, new_service)
+        };
+        let on_process_error = |err| eprintln!("modbus server error: {err}");
+        let _ = server.serve(&on_connected, on_process_error).await;
+    });
+
+    let proxy_addr = spawn_proxy(modbus_addr).await;
+
+    let mut ctx = tokio_modbus::client::tcp::connect(proxy_addr)
+        .await
+        .expect("failed to connect modbus client through proxy");
+    let registers = timeout(
+        IO_TIMEOUT,
+        ctx.read_holding_registers(0, REGISTERS.len() as u16),
+    )
+    .await
+    .expect("modbus read timed out")
+    .expect("modbus read failed")
+    .expect("modbus returned an exception");
+
+    assert_eq!(
+        registers,
+        REGISTERS.to_vec(),
+        "holding registers must round-trip through the proxy"
+    );
+}
+
+/// A real HTTP/1.1 exchange is relayed through the proxy: a client request reaches
+/// a real `tiny_http` server behind the proxy and the response comes back intact.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn relays_a_real_http_exchange() {
+    const BODY: &str = "Hello through the proxy";
+
+    // A real (blocking) HTTP server; it answers one request then its thread ends.
+    let server = tiny_http::Server::http("127.0.0.1:0").expect("failed to start http server");
+    let http_addr = server
+        .server_addr()
+        .to_ip()
+        .expect("http server ip address");
+    std::thread::spawn(move || {
+        if let Ok(request) = server.recv() {
+            let _ = request.respond(tiny_http::Response::from_string(BODY));
+        }
+    });
+
+    let proxy_addr = spawn_proxy(http_addr).await;
+
+    let mut client = connect(proxy_addr).await;
+    timeout(
+        IO_TIMEOUT,
+        client.write_all(b"GET / HTTP/1.1\r\nHost: proxy-test\r\nConnection: close\r\n\r\n"),
+    )
+    .await
+    .expect("http write timed out")
+    .expect("failed to send http request");
+
+    // Read until the response body arrives (or the server closes).
+    let mut response = Vec::new();
+    let mut buffer = [0u8; 1024];
+    loop {
+        let read_length = timeout(IO_TIMEOUT, client.read(&mut buffer))
+            .await
+            .expect("http read timed out")
+            .expect("failed to read http response");
+        if read_length == 0 {
+            break;
+        }
+        response.extend_from_slice(&buffer[0..read_length]);
+        if String::from_utf8_lossy(&response).contains(BODY) {
+            break;
+        }
+    }
+
+    let text = String::from_utf8_lossy(&response);
+    assert!(
+        text.starts_with("HTTP/1.1 200"),
+        "expected a 200 response through the proxy, got: {text}"
+    );
+    assert!(
+        text.contains(BODY),
+        "the HTTP response body must round-trip through the proxy"
+    );
 }
