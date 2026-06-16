@@ -19,6 +19,7 @@ use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
+use tokio::time::sleep;
 use tokio::time::timeout;
 use tokio_modbus::ExceptionCode;
 use tokio_modbus::Request as ModbusRequest;
@@ -38,12 +39,16 @@ const LOOPBACK: &str = "127.0.0.1:0";
 
 /// Build proxy `Arguments` pointing at `remote_addr`, with logging silenced so
 /// test output stays clean.
-fn test_arguments(bind_listener_addr: SocketAddr, remote_addr: SocketAddr) -> Arguments {
+fn test_arguments(
+    bind_listener_addr: SocketAddr,
+    remote_addr: SocketAddr,
+    timeout: Option<u64>,
+) -> Arguments {
     Arguments {
         level: LoggingLevel::Off,
         bind_listener_addr,
         remote_addr,
-        timeout: IO_TIMEOUT.as_secs(),
+        timeout,
         formatting: PayloadFormatingKind::LowerHex,
         separator: ":".to_string(),
         precision: TimestampPrecision::Seconds,
@@ -80,7 +85,8 @@ async fn spawn_echo_server() -> SocketAddr {
 }
 
 /// Bind a proxy listener on an ephemeral loopback port and start its accept loop
-/// in the background. Returns the proxy's bound address.
+/// in the background. Returns the proxy's bound address. Uses a bounded idle
+/// timeout so a stuck test fails fast rather than hanging.
 ///
 /// There is no handle to stop it: the accept loop is intentionally infinite (a
 /// proxy keeps listening), and per-connection cleanup is automatic — each
@@ -88,11 +94,20 @@ async fn spawn_echo_server() -> SocketAddr {
 /// loop itself is cancelled when the test's runtime is dropped at the end of the
 /// test, which also releases the ephemeral port.
 async fn spawn_proxy(remote_addr: SocketAddr) -> SocketAddr {
+    spawn_proxy_with_timeout(remote_addr, Some(IO_TIMEOUT.as_secs())).await
+}
+
+/// Like [`spawn_proxy`] but with an explicit `--timeout` value, where `None` is
+/// the default behaviour of no idle timeout.
+async fn spawn_proxy_with_timeout(remote_addr: SocketAddr, timeout: Option<u64>) -> SocketAddr {
     let listener = TcpListener::bind(LOOPBACK)
         .await
         .expect("failed to bind proxy");
     let addr = listener.local_addr().expect("proxy local_addr");
-    tokio::spawn(run_accept_loop(listener, test_arguments(addr, remote_addr)));
+    tokio::spawn(run_accept_loop(
+        listener,
+        test_arguments(addr, remote_addr, timeout),
+    ));
     addr
 }
 
@@ -392,7 +407,7 @@ async fn bind_failure_returns_error() {
     let in_use_addr = occupier.local_addr().expect("occupier local_addr");
 
     // `remote_addr` is irrelevant: the bind fails before any connection is served.
-    let result = initialize_tcp_listener(test_arguments(in_use_addr, in_use_addr)).await;
+    let result = initialize_tcp_listener(test_arguments(in_use_addr, in_use_addr, None)).await;
 
     assert!(
         result.is_err(),
@@ -551,4 +566,40 @@ async fn relays_a_real_http_exchange() {
         text.contains(BODY),
         "the HTTP response body must round-trip through the proxy"
     );
+}
+
+/// When `--timeout` is set, an idle source connection is torn down once the
+/// timeout elapses: the client's read returns end-of-stream.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn idle_source_times_out_when_timeout_is_set() {
+    let echo_addr = spawn_echo_server().await;
+    let proxy_addr = spawn_proxy_with_timeout(echo_addr, Some(1)).await;
+
+    // The client connects but stays idle. After ~1s the proxy times out the source
+    // read, tears the connection down, and the client observes end-of-stream.
+    let mut client = connect(proxy_addr).await;
+    let mut buffer = [0u8; 16];
+    let read_length = timeout(IO_TIMEOUT, client.read(&mut buffer))
+        .await
+        .expect("client read timed out: the idle timeout did not fire")
+        .expect("client read errored");
+    assert_eq!(
+        read_length, 0,
+        "expected end-of-stream after the idle timeout elapsed"
+    );
+}
+
+/// Without `--timeout` (the default), an idle source connection is NOT torn down:
+/// it stays open and still relays after a period of inactivity longer than the
+/// timeout used by [`idle_source_times_out_when_timeout_is_set`].
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn idle_connection_stays_open_without_timeout() {
+    let echo_addr = spawn_echo_server().await;
+    let proxy_addr = spawn_proxy_with_timeout(echo_addr, None).await;
+
+    let mut client = connect(proxy_addr).await;
+    // Stay idle longer than the 1s timeout the sibling test uses; with no timeout
+    // the connection must remain usable.
+    sleep(Duration::from_millis(1500)).await;
+    assert_round_trip(&mut client, b"still alive").await;
 }

@@ -91,19 +91,20 @@ async fn incoming_connection_handle(arguments: Arguments, source_stream: tokio_n
         ));
 
     // Relay both directions concurrently, running each to completion. The
-    // source -> destination direction is bounded by the configured idle-read
-    // timeout; the destination -> source direction is not. As each direction ends
-    // (end-of-stream, a read/write error, or — for the source side — an idle
-    // timeout) it shuts down its writer, forwarding the close to that peer; the
-    // other direction keeps relaying until it ends too. Running both to completion
-    // (rather than cancelling the second when the first ends) means data still in
-    // flight in the other direction is delivered instead of dropped — this
-    // correctly handles a peer that half-closes while a response is still pending.
+    // source -> destination direction is bounded by the idle-read timeout only
+    // when one is configured (`--timeout`); the destination -> source direction is
+    // never timed out. As each direction ends (end-of-stream, a read/write error,
+    // or — for the source side — an idle timeout) it shuts down its writer,
+    // forwarding the close to that peer; the other direction keeps relaying until
+    // it ends too. Running both to completion (rather than cancelling the second
+    // when the first ends) means data still in flight in the other direction is
+    // delivered instead of dropped — this correctly handles a peer that
+    // half-closes while a response is still pending.
     tokio::join!(
         relay(
             source_stream_read_half,
             destination_stream_write_half,
-            Some(Duration::from_secs(arguments.timeout)),
+            arguments.timeout.map(Duration::from_secs),
         ),
         relay(destination_stream_read_half, source_stream_write_half, None),
     );
