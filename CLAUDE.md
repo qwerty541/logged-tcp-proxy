@@ -79,7 +79,8 @@ All source lives in `src/`:
    - **destination → source**: copies bytes from the destination to the source.
    - **source → destination**: copies bytes from the source to the destination,
      with each read bounded by a `tokio::time::timeout` of `arguments.timeout`
-     seconds (an idle-read timeout on the client side).
+     seconds **only when `--timeout` is set** (an opt-in idle-read timeout on the
+     client side); by default there is no timeout.
    Each `relay` ends at end-of-stream (a `0`-length read), on a read/write error,
    or — for the source side — on an idle timeout, then shuts down its writer to
    forward the close to that peer (a half-close). Because both directions run to
@@ -141,7 +142,7 @@ to its users):
 -l, --level <LEVEL>                          [default: debug]  trace|debug|info|warn|error|off
 -b, --bind-listener-addr <SOCKET_ADDR>       address to listen on (IP:port)
 -r, --remote-addr <SOCKET_ADDR>              destination address (IP:port)
--t, --timeout <SECONDS>                      source-side read timeout [default: 60]
+-t, --timeout <SECONDS>                      optional source-side idle read timeout; waits indefinitely if omitted
 -f, --formatting <FORMATTING>                [default: lowerhex]  decimal|lowerhex|upperhex|binary|octal
 -s, --separator <STRING>                     byte separator in output [default: ":"]
 -p, --precision <PRECISION>                  [default: seconds]  seconds|milliseconds|microseconds|nanoseconds
