@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The `--timeout` option is now opt-in. By default the proxy no longer applies the previous 60-second idle read timeout to the source connection — it relays until the connection is closed by a peer or the proxy is interrupted with Ctrl-C. Pass `--timeout <seconds>` to enable an idle read timeout.
 - Migrated the codebase to the Rust 2024 edition.
 - Bumped MSRV from 1.70.0 to 1.85.1.
 - Removed `lib.rs` and used modules directly in the binary to make the crate binary-only. This is intentional to prevent the crate from being used as a library and to clarify that it is only meant to be used as a command-line tool.
