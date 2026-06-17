@@ -88,7 +88,7 @@ Options:
   -r, --remote-addr <REMOTE_ADDR>
           Address of remote server
   -t, --timeout <TIMEOUT>
-          Idle read timeout for the source connection, in seconds. If omitted, the proxy waits indefinitely (until the peer closes the connection or Ctrl-C)
+          Idle timeout for the connection, in seconds: the connection is closed once both directions have been silent for this long. If omitted, the proxy waits indefinitely (until a peer closes the connection or Ctrl-C)
   -f, --formatting <FORMATTING>
           Formatting of console payload output, [default: lowerhex] [possible values: decimal, lowerhex, upperhex, binary, octal]
   -s, --separator <SEPARATOR>
