@@ -172,6 +172,9 @@ impl ActivityClock {
     /// The instant at which the connection is considered idle for `idle`.
     fn idle_deadline(&self, idle: Duration) -> Instant {
         let last_active = Duration::from_millis(self.last_active_millis.load(Ordering::Relaxed));
+        // `idle` is the `--timeout` value, which `args::Arguments` range-validates to
+        // at most ~100 years, so this `Instant + Duration` can never overflow the
+        // monotonic clock (which would otherwise panic).
         self.started + last_active + idle
     }
 }
