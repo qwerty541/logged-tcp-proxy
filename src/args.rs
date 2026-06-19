@@ -226,9 +226,11 @@ pub struct Arguments {
     /// Address of remote server.
     #[arg(short, long)]
     pub remote_addr: net::SocketAddr,
-    /// Incoming connection reading timeout.
-    #[arg(short, long, default_value = "60")]
-    pub timeout: u64,
+    /// Idle timeout for the connection, in seconds: the connection is closed once
+    /// both directions have been silent for this long. If omitted, the proxy waits
+    /// indefinitely (until a peer closes the connection or Ctrl-C).
+    #[arg(short, long)]
+    pub timeout: Option<u64>,
     /// Formatting of console payload output,
     #[arg(short, long, default_value = "lowerhex")]
     pub formatting: PayloadFormatingKind,

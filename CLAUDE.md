@@ -52,10 +52,14 @@ All source lives in `src/`:
     can be driven by tests with a pre-bound (ephemeral-port) listener.
   - `incoming_connection_handle(arguments, source_stream)` (private) — sets up
     the per-connection bidirectional relay (see below).
-  - `relay(reader, writer, read_timeout)` (private, generic) — copies bytes in
-    one direction until end-of-stream, a read/write error, or (when
-    `read_timeout` is set) an idle read timeout, then shuts down `writer` to
+  - `relay(reader, writer, activity)` (private, generic) — copies bytes in one
+    direction until end-of-stream or a read/write error, recording each chunk on
+    the shared `activity` clock (when one is given), then shuts down `writer` to
     forward the close to its peer.
+  - `ActivityClock` / `wait_until_idle` (private) — the whole-connection idle
+    timeout: a lock-free clock both directions bump on activity, plus a watchdog
+    that tears the connection down once both directions have been silent for
+    `--timeout`.
 - [`src/tests.rs`](src/tests.rs) — in-crate integration tests, compiled only
   under `#[cfg(test)]` (declared as `mod tests;` from `main.rs`). See
   [Testing](#testing).
@@ -77,15 +81,18 @@ All source lives in `src/`:
    futures (one connection task, not two spawned per-direction tasks), running
    each direction to completion:
    - **destination → source**: copies bytes from the destination to the source.
-   - **source → destination**: copies bytes from the source to the destination,
-     with each read bounded by a `tokio::time::timeout` of `arguments.timeout`
-     seconds (an idle-read timeout on the client side).
-   Each `relay` ends at end-of-stream (a `0`-length read), on a read/write error,
-   or — for the source side — on an idle timeout, then shuts down its writer to
-   forward the close to that peer (a half-close). Because both directions run to
-   completion independently (rather than one being cancelled when the other ends),
-   data still in flight in the other direction is delivered before the connection
-   closes.
+   - **source → destination**: copies bytes from the source to the destination.
+   Each `relay` ends at end-of-stream (a `0`-length read) or on a read/write error,
+   then shuts down its writer to forward the close to that peer (a half-close).
+   Because both directions run to completion independently (rather than one being
+   cancelled when the other ends), data still in flight in the other direction is
+   delivered before the connection closes.
+4. When `--timeout` is set, a single **whole-connection idle timeout** runs
+   alongside the relays via `tokio::select!`: both directions bump a shared
+   `ActivityClock` on every chunk, and `wait_until_idle` tears the connection down
+   once **both** directions have been silent for the timeout. Activity in either
+   direction resets it, so an actively-transferring one-directional connection is
+   never interrupted. With no `--timeout`, there is no idle timeout at all.
 
 ### Logging / de-duplication detail (intentional)
 
@@ -141,7 +148,7 @@ to its users):
 -l, --level <LEVEL>                          [default: debug]  trace|debug|info|warn|error|off
 -b, --bind-listener-addr <SOCKET_ADDR>       address to listen on (IP:port)
 -r, --remote-addr <SOCKET_ADDR>              destination address (IP:port)
--t, --timeout <SECONDS>                      source-side read timeout [default: 60]
+-t, --timeout <SECONDS>                      optional whole-connection idle timeout; waits indefinitely if omitted
 -f, --formatting <FORMATTING>                [default: lowerhex]  decimal|lowerhex|upperhex|binary|octal
 -s, --separator <STRING>                     byte separator in output [default: ":"]
 -p, --precision <PRECISION>                  [default: seconds]  seconds|milliseconds|microseconds|nanoseconds
