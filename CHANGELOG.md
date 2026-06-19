@@ -49,7 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated `env_logger` from 0.10.0 to 0.11.10
 - Updated `rustix` from 0.38.8 to 0.38.27
 - Updated `logged-stream` from 0.3.4 to 0.6.0
-- Updated `log` from 0.4.20 to 0.4.31
+- Updated `log` from 0.4.20 to 0.4.32
 - Updated `mio` from 0.8.9 to 0.8.11
 - Updated `bytes` from 1.5.0 to 1.11.1
 - Updated `anstream` from 0.6.7 to 0.6.21
