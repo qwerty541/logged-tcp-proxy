@@ -41,17 +41,31 @@ All source lives in `src/`:
     `get_formatter_by_kind`.
   - `TimestampPrecision` → converts into `env_logger`'s timestamp precision.
 - [`src/conn.rs`](src/conn.rs) — the networking core:
-  - `initialize_tcp_listener(arguments)` (`pub`) — binds the `TcpListener`,
-    logs that it is ready, then runs the accept loop.
+  - `initialize_tcp_listener(arguments)` (`pub`, returns `io::Result<()>`) — binds
+    the `TcpListener` (returning `Err` on a bind failure instead of panicking),
+    logs that it is ready, then serves until interrupted: a `tokio::select!` runs
+    the accept loop alongside `tokio::signal::ctrl_c()`, so Ctrl-C stops the
+    listener and returns `Ok(())` for a clean exit.
   - `run_accept_loop(listener, arguments)` (`pub(crate)`) — the accept loop:
     for each accepted connection it logs the peer address and spawns
     `incoming_connection_handle`. Extracted from `initialize_tcp_listener` so it
     can be driven by tests with a pre-bound (ephemeral-port) listener.
   - `incoming_connection_handle(arguments, source_stream)` (private) — sets up
     the per-connection bidirectional relay (see below).
+  - `relay(reader, writer, activity)` (private, generic) — copies bytes in one
+    direction until end-of-stream or a read/write error, recording each chunk on
+    the shared `activity` clock (when one is given), then shuts down `writer` to
+    forward the close to its peer.
+  - `ActivityClock` / `wait_until_idle` (private) — the whole-connection idle
+    timeout: a lock-free clock both directions bump on activity, plus a watchdog
+    that tears the connection down once both directions have been silent for
+    `--timeout`.
 - [`src/tests.rs`](src/tests.rs) — in-crate integration tests, compiled only
   under `#[cfg(test)]` (declared as `mod tests;` from `main.rs`). See
   [Testing](#testing).
+- [`scripts/integration_test.py`](scripts/integration_test.py) — a black-box
+  integration test that drives the **compiled binary** end to end (lives outside
+  `src/` and is not part of the published crate). See [Testing](#testing).
 
 ## How a proxied connection works
 
@@ -59,15 +73,26 @@ All source lives in `src/`:
 
 1. Wraps the accepted client socket ("source") in a `logged_stream::LoggedStream`
    and `tokio::io::split`s it into read/write halves.
-2. Connects a fresh `TcpStream` to `arguments.remote_addr` ("destination"),
-   wraps it in another `LoggedStream`, and splits it too.
-3. Spawns two relay tasks:
-   - **destination → source**: reads from the destination and writes to the
-     source.
-   - **source → destination**: reads from the source (each read wrapped in a
-     `tokio::time::timeout` of `arguments.timeout` seconds) and writes to the
-     destination. On a source read error/timeout it aborts the destination
-     task.
+2. Connects a fresh `TcpStream` to `arguments.remote_addr` ("destination"). If the
+   connect fails it logs the error and **returns** (no panic); dropping the source
+   halves closes the already-accepted client connection cleanly. On success it
+   wraps the stream in another `LoggedStream` and splits it.
+3. Relays both directions concurrently with `tokio::join!` over two `relay`
+   futures (one connection task, not two spawned per-direction tasks), running
+   each direction to completion:
+   - **destination → source**: copies bytes from the destination to the source.
+   - **source → destination**: copies bytes from the source to the destination.
+   Each `relay` ends at end-of-stream (a `0`-length read) or on a read/write error,
+   then shuts down its writer to forward the close to that peer (a half-close).
+   Because both directions run to completion independently (rather than one being
+   cancelled when the other ends), data still in flight in the other direction is
+   delivered before the connection closes.
+4. When `--timeout` is set, a single **whole-connection idle timeout** runs
+   alongside the relays via `tokio::select!`: both directions bump a shared
+   `ActivityClock` on every chunk, and `wait_until_idle` tears the connection down
+   once **both** directions have been silent for the timeout. Activity in either
+   direction resets it, so an actively-transferring one-directional connection is
+   never interrupted. With no `--timeout`, there is no idle timeout at all.
 
 ### Logging / de-duplication detail (intentional)
 
@@ -79,10 +104,28 @@ deliberately does **not** re-log payload, because those bytes are the same ones
 already shown on the source side. This avoids printing every byte twice. The
 console sink is `ConsoleLogger` at the `"debug"` label.
 
+### Error handling and shutdown
+
+Runtime failures are handled gracefully rather than by panicking:
+
+- **Bind failure** (e.g. the listen address is in use) — logged, and
+  `initialize_tcp_listener` returns `Err`; `main` then exits with status `1`.
+- **Destination connect failure** — logged; that one connection is dropped
+  cleanly (closing the client), the listener keeps serving other clients.
+- **Per-connection relay errors** — end that direction and tear the connection
+  down (see the relay description above); they never abort the process.
+- **Ctrl-C (SIGINT)** — stops the accept loop; in-flight connections are closed as
+  the runtime shuts down and the process exits `0`. No ports or connections are
+  left behind after exit.
+
+(The `ConsoleLogger::new_unchecked("debug")` calls take a compile-time-constant,
+valid level, so they cannot panic at runtime.)
+
 ## Dependencies
 
 - `tokio` (with `default-features = false` and only `io-util`, `macros`, `net`,
-  `rt-multi-thread`, `time`) — async runtime, TCP, `timeout`, I/O traits.
+  `rt-multi-thread`, `signal`, `time`) — async runtime, TCP, `timeout`, I/O
+  traits, and `ctrl_c` for graceful shutdown.
 - `clap` (`std`, `derive`) — CLI parsing.
 - `env_logger` + `log` — logging frontend/facade.
 - `bytes` — `BytesMut` relay buffers.
@@ -92,13 +135,20 @@ console sink is `ConsoleLogger` at the `"debug"` label.
   `UppercaseHexadecimalFormatter`, `BinaryFormatter`, `OctalFormatter`),
   `ConsoleLogger`, `DefaultFilter`, `RecordKindFilter`, and `RecordKind`.
 
+Dev-dependencies (test-only; not compiled into the published binary and irrelevant
+to its users):
+
+- `tokio-modbus` (`default-features = false`, `["tcp", "tcp-server"]`) — a real
+  MODBUS TCP server + client for the real-protocol relay test.
+- `tiny_http` — a small real HTTP/1.1 server for the real-protocol relay test.
+
 ## CLI options
 
 ```
 -l, --level <LEVEL>                          [default: debug]  trace|debug|info|warn|error|off
 -b, --bind-listener-addr <SOCKET_ADDR>       address to listen on (IP:port)
 -r, --remote-addr <SOCKET_ADDR>              destination address (IP:port)
--t, --timeout <SECONDS>                      source-side read timeout [default: 60]
+-t, --timeout <SECONDS>                      optional whole-connection idle timeout (1..=3153600000); waits indefinitely if omitted
 -f, --formatting <FORMATTING>                [default: lowerhex]  decimal|lowerhex|upperhex|binary|octal
 -s, --separator <STRING>                     byte separator in output [default: ":"]
 -p, --precision <PRECISION>                  [default: seconds]  seconds|milliseconds|microseconds|nanoseconds
@@ -119,7 +169,28 @@ cargo fmt --check                         # rustfmt.toml: imports_granularity="I
 cargo msrv find                           # verify MSRV (requires cargo-msrv)
 ```
 
+## Definition of done for code changes
+
+Any change that alters behavior, the CLI, or the architecture must, **in the same
+change**, also do the following — this is the default expectation and does not
+need to be requested each time:
+
+- **Tests** — add or update coverage so the new behavior is exercised and
+  regressions are caught: the in-crate tests in [`src/tests.rs`](src/tests.rs)
+  and/or the black-box [`scripts/integration_test.py`](scripts/integration_test.py).
+- **Docs** — update this `CLAUDE.md` and [`README.md`](README.md) wherever they
+  describe what changed (behavior, CLI options, architecture).
+- **Changelog** — add a user-facing entry under `## Unreleased` in
+  [`CHANGELOG.md`](CHANGELOG.md) (Keep a Changelog format) for anything worth
+  mentioning to users.
+- **Checks** — run the full set above (`build --all-targets`, `test`, `clippy`,
+  `fmt --check`) and keep it green.
+
 ## Testing
+
+There are two layers of tests, both runnable locally and in CI.
+
+### In-crate tests (`cargo test`)
 
 Integration tests live **inside the crate** in [`src/tests.rs`](src/tests.rs)
 under `#[cfg(test)]`, rather than in a top-level `tests/` directory. This is a
@@ -128,18 +199,56 @@ deliberate choice: a `tests/` directory can only exercise a crate's public
 library surface on docs.rs. Keeping the tests in-crate lets them call internal
 (`pub(crate)`) functions directly while the package stays binary-only.
 
-The tests are fully self-contained and portable:
+They are fully self-contained and portable:
 
-- Each test spins up its own minimal **echo server** written with plain Tokio
-  (no external tools like `python`/`netcat`, no extra dev-dependencies).
-- Both the echo server and the proxy listener bind to `127.0.0.1:0`, letting the
-  OS assign ephemeral ports — so parallel test/CI jobs never collide and there
-  are no hardcoded ports. Always use the literal `127.0.0.1` (not `localhost`,
-  which can resolve to IPv6 on Windows).
+- Most tests spin up their own minimal **echo server** (and, where needed, a fake
+  remote) written with plain Tokio — no external tools. Two tests additionally
+  prove the proxy relays **real protocol traffic** (its actual use case): a real
+  MODBUS TCP exchange via the `tokio-modbus` server + client, and a real HTTP/1.1
+  exchange via a `tiny_http` server (these are the only dev-dependencies). The
+  proxy itself never parses these protocols — it is a transparent byte relay — so
+  these are realism/use-case tests rather than new code coverage.
+- The echo server, the proxy listener, and any fake remote bind to `127.0.0.1:0`,
+  letting the OS assign ephemeral ports — so parallel test/CI jobs never collide
+  and there are no hardcoded ports. Always use the literal `127.0.0.1` (not
+  `localhost`, which can resolve to IPv6 on Windows).
 - All network I/O is wrapped in `tokio::time::timeout`, so tests fail fast
-  instead of hanging and avoid `sleep`-based flakiness.
-- Tests run via `cargo test`, identically on the developer machine and in CI
+  instead of hanging and avoid `sleep`-based flakiness. Per-connection cleanup is
+  automatic, so tests do not need to stop the proxy explicitly; the accept loop is
+  cancelled when the test runtime is dropped.
+- They run via `cargo test`, identically on the developer machine and in CI
   (ubuntu/macos/windows × stable/beta/nightly).
+
+### Black-box binary test (`scripts/integration_test.py`)
+
+[`scripts/integration_test.py`](scripts/integration_test.py) exercises the
+**compiled binary** end to end — something the in-crate tests cannot do. It starts
+an echo server, runs the proxy binary between a client and that echo server, and
+covers several cases:
+
+- **relay + logging** — bytes are relayed both ways **and** the proxy prints the
+  payload to the console in the requested format (checked for `lowerhex` and
+  `upperhex`).
+- **real HTTP** — a real request/response (stdlib `http.server` + `urllib`) is
+  relayed through the proxy.
+- **real MODBUS** — a real MODBUS TCP read-holding-registers exchange (frames
+  hand-built with `struct`) is relayed, and the proxy is checked to have logged
+  the request frame in hex.
+- **unreachable remote** — with the remote down, the proxy logs the failure,
+  closes the client cleanly, keeps serving, and does not print a panic.
+- **bind failure** — binding an in-use address exits non-zero without panicking.
+- **Ctrl-C** — SIGINT shuts the proxy down with exit code `0` (POSIX only).
+
+It uses only the Python standard library (no `pip` packages), so it runs the same
+on Linux/macOS/Windows. Run it manually with:
+
+```sh
+python3 scripts/integration_test.py
+```
+
+By default it builds the debug binary first; set `LOGGED_TCP_PROXY_BIN` to a
+prebuilt binary to skip the build. In CI it runs as the dedicated `integration`
+job.
 
 ## Continuous integration
 
@@ -150,6 +259,9 @@ The tests are fully self-contained and portable:
 - **fmt** — `cargo fmt --check`.
 - **build_and_test** — `cargo build --all-targets` then `cargo test` on
   ubuntu/macos/windows × stable/beta/nightly.
+- **integration** — builds the binary and runs the black-box
+  [`scripts/integration_test.py`](scripts/integration_test.py) on
+  ubuntu/macos/windows (the Ctrl-C case is skipped on Windows).
 - **msrv** — `cargo msrv find` to verify the minimal supported Rust version.
 
 Other workflows are housekeeping: `labeler.yml` (PR labels) and

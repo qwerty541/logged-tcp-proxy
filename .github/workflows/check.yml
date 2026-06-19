@@ -108,6 +108,48 @@ jobs:
       - name: Tests
         run: cargo test
 
+  integration:
+    name: Binary integration test
+    runs-on: ${{ matrix.os }}-latest
+    timeout-minutes: 15
+
+    strategy:
+      matrix:
+        os: [ubuntu, macos, windows]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Install rust (stable)
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+
+      # Reuse the `stable` build cache that the build_and_test job populates (same
+      # key format and Cargo.lock), so the script's `cargo build` starts warm.
+      # Restore only — build_and_test owns writing this cache.
+      - name: Restore build cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: |
+            ~/.cargo
+            target
+          key: ${{ matrix.os }}-stable-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ matrix.os }}-stable-${{ hashFiles('**/Cargo.lock') }}
+            ${{ matrix.os }}-stable-
+          enableCrossOsArchive: true
+
+      # Builds the binary and exercises it end to end (relay + console output)
+      # via the standard-library Python script. Python 3 is preinstalled on every
+      # runner; it is `python3` on the Unix runners and `python` on Windows.
+      - name: Run black-box integration test
+        shell: bash
+        run: |
+          python="$(command -v python3 || command -v python)"
+          "$python" scripts/integration_test.py
+
   msrv:
     name: Check minimal supported rust version (MSRV).
     runs-on: ubuntu-latest

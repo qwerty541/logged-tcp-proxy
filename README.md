@@ -88,7 +88,7 @@ Options:
   -r, --remote-addr <REMOTE_ADDR>
           Address of remote server
   -t, --timeout <TIMEOUT>
-          Incoming connection reading timeout [default: 60]
+          Idle timeout for the connection, in seconds: the connection is closed once both directions have been silent for this long. If omitted, the proxy waits indefinitely (until a peer closes the connection or Ctrl-C)
   -f, --formatting <FORMATTING>
           Formatting of console payload output, [default: lowerhex] [possible values: decimal, lowerhex, upperhex, binary, octal]
   -s, --separator <SEPARATOR>
@@ -107,7 +107,7 @@ Below is an example of using this command line tool as proxy between device and 
 
 ```
 $ logged_tcp_proxy --bind-listener-addr 127.0.0.1:20502 --remote-addr 127.0.0.1:20582
-[2023-05-04T02:39:33Z INFO] Listener binded, waiting for incoming connections...
+[2023-05-04T02:39:33Z INFO] Listener bound to 127.0.0.1:20502, waiting for incoming connections...
 [2023-05-04T02:39:37Z INFO] Incoming connection from 127.0.0.1:50376
 [2023-05-04T02:39:37Z DEBUG] < 00:00:00:00:00:19:6f:03:16:00:1f:00:20:00:11:00:22:00:33:00:44:00:55:00:66:00:01:00:00:00:00
 [2023-05-04T02:39:37Z DEBUG] > 00:00:00:00:00:0b:6f:10:03:f1:00:02:04:00:00:00:00
