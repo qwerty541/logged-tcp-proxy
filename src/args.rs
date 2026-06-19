@@ -213,6 +213,13 @@ impl From<TimestampPrecision> for EnvLoggerTimestampPrecision {
     }
 }
 
+/// Maximum accepted `--timeout`, in seconds (~100 years). Generous enough to cover
+/// any realistic idle timeout, yet small enough that the connection-start instant
+/// plus the timeout can never overflow the monotonic clock on any platform — which
+/// would otherwise panic the connection task. ("No timeout" is the default anyway,
+/// reached by omitting the flag, so there is no need for larger finite values.)
+const MAX_TIMEOUT_SECONDS: u64 = 60 * 60 * 24 * 365 * 100;
+
 #[derive(Debug, Clone, Parser)]
 #[command(next_line_help = true)]
 #[command(author, version, about, long_about = None)]
@@ -229,7 +236,7 @@ pub struct Arguments {
     /// Idle timeout for the connection, in seconds: the connection is closed once
     /// both directions have been silent for this long. If omitted, the proxy waits
     /// indefinitely (until a peer closes the connection or Ctrl-C).
-    #[arg(short, long)]
+    #[arg(short, long, value_parser = clap::value_parser!(u64).range(1..=MAX_TIMEOUT_SECONDS))]
     pub timeout: Option<u64>,
     /// Formatting of console payload output,
     #[arg(short, long, default_value = "lowerhex")]

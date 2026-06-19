@@ -144,6 +144,14 @@ async fn incoming_connection_handle(arguments: Arguments, source_stream: tokio_n
 /// through a shared reference.
 struct ActivityClock {
     started: Instant,
+    // `Relaxed` is deliberate. The relays and the watchdog that touch this are
+    // cooperatively-scheduled sub-futures of a *single* task (composed with
+    // `join!`/`select!`, not separate spawns — note they borrow `&self`), so they
+    // never access it from two threads at once. It is also a self-contained
+    // timestamp that guards no other memory, so there is nothing for Acquire/Release
+    // to publish; single-location coherence is the whole requirement, and the
+    // watchdog re-reads after sleeping whole seconds, far longer than any store can
+    // take to become visible.
     last_active_millis: AtomicU64,
 }
 
@@ -164,6 +172,9 @@ impl ActivityClock {
     /// The instant at which the connection is considered idle for `idle`.
     fn idle_deadline(&self, idle: Duration) -> Instant {
         let last_active = Duration::from_millis(self.last_active_millis.load(Ordering::Relaxed));
+        // `idle` is the `--timeout` value, which `args::Arguments` range-validates to
+        // at most ~100 years, so this `Instant + Duration` can never overflow the
+        // monotonic clock (which would otherwise panic).
         self.started + last_active + idle
     }
 }

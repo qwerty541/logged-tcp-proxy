@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The `--timeout` option is now opt-in and acts as a whole-connection idle timeout. By default the proxy applies no idle timeout — it relays until a peer closes the connection or the proxy is interrupted with Ctrl-C. When set, `--timeout <seconds>` closes the connection only after both directions have been idle for that long (activity in either direction resets the timer), so an active transfer is never interrupted.
+- The `--timeout` option is now opt-in and acts as a whole-connection idle timeout. By default the proxy applies no idle timeout — it relays until a peer closes the connection or the proxy is interrupted with Ctrl-C. When set, `--timeout <seconds>` closes the connection only after both directions have been idle for that long (activity in either direction resets the timer), so an active transfer is never interrupted. The value must be between 1 and 3153600000 seconds (about 100 years); out-of-range values are rejected at startup instead of being able to overflow the internal clock.
 - Migrated the codebase to the Rust 2024 edition.
 - Bumped MSRV from 1.70.0 to 1.85.1.
 - Removed `lib.rs` and used modules directly in the binary to make the crate binary-only. This is intentional to prevent the crate from being used as a library and to clarify that it is only meant to be used as a command-line tool.

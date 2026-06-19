@@ -148,7 +148,7 @@ to its users):
 -l, --level <LEVEL>                          [default: debug]  trace|debug|info|warn|error|off
 -b, --bind-listener-addr <SOCKET_ADDR>       address to listen on (IP:port)
 -r, --remote-addr <SOCKET_ADDR>              destination address (IP:port)
--t, --timeout <SECONDS>                      optional whole-connection idle timeout; waits indefinitely if omitted
+-t, --timeout <SECONDS>                      optional whole-connection idle timeout (1..=3153600000); waits indefinitely if omitted
 -f, --formatting <FORMATTING>                [default: lowerhex]  decimal|lowerhex|upperhex|binary|octal
 -s, --separator <STRING>                     byte separator in output [default: ":"]
 -p, --precision <PRECISION>                  [default: seconds]  seconds|milliseconds|microseconds|nanoseconds

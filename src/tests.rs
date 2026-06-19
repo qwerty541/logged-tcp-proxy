@@ -657,3 +657,42 @@ async fn active_reverse_direction_keeps_forward_direction_open() {
         "the forward direction must stay open while the reverse direction is active"
     );
 }
+
+/// `--timeout` is range-validated by clap: `0` and values large enough to overflow
+/// the monotonic clock are rejected, a normal value parses, and omitting it yields
+/// `None` (no timeout).
+#[test]
+fn timeout_argument_is_range_validated() {
+    use clap::Parser;
+
+    fn parse(extra: &[&str]) -> Result<Arguments, clap::Error> {
+        let mut argv = vec!["logged_tcp_proxy", "-b", "127.0.0.1:0", "-r", "127.0.0.1:0"];
+        argv.extend_from_slice(extra);
+        Arguments::try_parse_from(argv)
+    }
+
+    assert_eq!(
+        parse(&[]).expect("omitting --timeout should parse").timeout,
+        None,
+    );
+    assert_eq!(
+        parse(&["-t", "30"])
+            .expect("a normal --timeout should parse")
+            .timeout,
+        Some(30),
+    );
+    assert!(parse(&["-t", "1"]).is_ok(), "the minimum (1) is accepted");
+    assert!(
+        parse(&["-t", "3153600000"]).is_ok(),
+        "the maximum (~100 years) is accepted"
+    );
+    assert!(parse(&["-t", "0"]).is_err(), "0 is rejected");
+    assert!(
+        parse(&["-t", "3153600001"]).is_err(),
+        "above the maximum is rejected"
+    );
+    assert!(
+        parse(&["-t", "18446744073709551615"]).is_err(),
+        "u64::MAX (which would overflow the clock) is rejected"
+    );
+}
