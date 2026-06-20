@@ -37,7 +37,7 @@ All source lives in `src/`:
   fields `pub`) plus three CLI value enums and their `ValueEnum` / `FromStr` /
   `Display` impls:
   - `LoggingLevel` → converts into `log::LevelFilter`.
-  - `PayloadFormatingKind` → selects a `logged_stream` formatter via
+  - `PayloadFormattingKind` → selects a `logged_stream` formatter via
     `get_formatter_by_kind`.
   - `TimestampPrecision` → converts into `env_logger`'s timestamp precision.
 - [`src/conn.rs`](src/conn.rs) — the networking core:
