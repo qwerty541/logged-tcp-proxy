@@ -6,6 +6,7 @@ use logged_stream::DefaultFilter;
 use logged_stream::LoggedStream;
 use logged_stream::RecordKind;
 use logged_stream::RecordKindFilter;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -15,6 +16,7 @@ use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt;
 use tokio::io::{self};
 use tokio::net as tokio_net;
+use tokio::sync::Semaphore;
 use tokio::time::Instant;
 use tokio::time::sleep_until;
 
@@ -52,16 +54,27 @@ pub async fn initialize_tcp_listener(arguments: Arguments) -> io::Result<()> {
 /// each one. Split out from [`initialize_tcp_listener`] so tests can drive it
 /// with a listener bound to an ephemeral port.
 pub(crate) async fn run_accept_loop(listener: tokio_net::TcpListener, arguments: Arguments) {
+    // Bound how many connections are handled concurrently. A permit is acquired
+    // *before* accepting, so once `--max-connections` are active the loop stops
+    // pulling connections off the backlog (natural backpressure) instead of
+    // spawning unbounded handlers; each handler holds its permit until it closes.
+    let connection_limit = Arc::new(Semaphore::new(arguments.max_connections as usize));
     loop {
+        let Ok(permit) = connection_limit.clone().acquire_owned().await else {
+            break; // the semaphore is never closed, so this only ends a stuck loop
+        };
         let cloned_arguments = arguments.clone();
-        let accept = listener.accept().await;
-        match accept {
+        match listener.accept().await {
             Ok((stream, addr)) => {
                 log::info!("Incoming connection from {addr}");
-                tokio::spawn(incoming_connection_handle(cloned_arguments, stream));
+                tokio::spawn(async move {
+                    incoming_connection_handle(cloned_arguments, stream).await;
+                    drop(permit); // release the slot once the connection is done
+                });
             }
             Err(e) => {
                 log::error!("Failed to accept incoming connection due to {e}");
+                drop(permit); // nothing was accepted, so free the slot and retry
             }
         }
     }
