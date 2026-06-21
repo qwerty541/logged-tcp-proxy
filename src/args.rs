@@ -83,7 +83,7 @@ impl From<LoggingLevel> for LevelFilter {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum PayloadFormatingKind {
+pub enum PayloadFormattingKind {
     Decimal,
     LowerHex,
     UpperHex,
@@ -91,7 +91,7 @@ pub enum PayloadFormatingKind {
     Octal,
 }
 
-impl ValueEnum for PayloadFormatingKind {
+impl ValueEnum for PayloadFormattingKind {
     fn value_variants<'a>() -> &'a [Self] {
         &[
             Self::Decimal,
@@ -113,7 +113,7 @@ impl ValueEnum for PayloadFormatingKind {
     }
 }
 
-impl FromStr for PayloadFormatingKind {
+impl FromStr for PayloadFormattingKind {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -126,7 +126,7 @@ impl FromStr for PayloadFormatingKind {
     }
 }
 
-impl fmt::Display for PayloadFormatingKind {
+impl fmt::Display for PayloadFormattingKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.to_possible_value()
             .expect("no values are skipped")
@@ -136,19 +136,19 @@ impl fmt::Display for PayloadFormatingKind {
 }
 
 pub fn get_formatter_by_kind(
-    kind: PayloadFormatingKind,
+    kind: PayloadFormattingKind,
     separator: &str,
 ) -> Box<dyn BufferFormatter> {
     match kind {
-        PayloadFormatingKind::Decimal => Box::new(DecimalFormatter::new(Some(separator))),
-        PayloadFormatingKind::LowerHex => {
+        PayloadFormattingKind::Decimal => Box::new(DecimalFormatter::new(Some(separator))),
+        PayloadFormattingKind::LowerHex => {
             Box::new(LowercaseHexadecimalFormatter::new(Some(separator)))
         }
-        PayloadFormatingKind::UpperHex => {
+        PayloadFormattingKind::UpperHex => {
             Box::new(UppercaseHexadecimalFormatter::new(Some(separator)))
         }
-        PayloadFormatingKind::Binary => Box::new(BinaryFormatter::new(Some(separator))),
-        PayloadFormatingKind::Octal => Box::new(OctalFormatter::new(Some(separator))),
+        PayloadFormattingKind::Binary => Box::new(BinaryFormatter::new(Some(separator))),
+        PayloadFormattingKind::Octal => Box::new(OctalFormatter::new(Some(separator))),
     }
 }
 
@@ -238,9 +238,13 @@ pub struct Arguments {
     /// indefinitely (until a peer closes the connection or Ctrl-C).
     #[arg(short, long, value_parser = clap::value_parser!(u64).range(1..=MAX_TIMEOUT_SECONDS))]
     pub timeout: Option<u64>,
+    /// Maximum number of connections processed concurrently. Once this many are
+    /// active, further incoming connections wait until a slot frees.
+    #[arg(short, long, default_value = "512", value_parser = clap::value_parser!(u32).range(1..))]
+    pub max_connections: u32,
     /// Formatting of console payload output,
     #[arg(short, long, default_value = "lowerhex")]
-    pub formatting: PayloadFormatingKind,
+    pub formatting: PayloadFormattingKind,
     /// Console payload output bytes separator.
     #[arg(short, long, default_value = ":")]
     pub separator: String,
