@@ -48,7 +48,10 @@ All source lives in `src/`:
     listener and returns `Ok(())` for a clean exit.
   - `run_accept_loop(listener, arguments)` (`pub(crate)`) — the accept loop:
     for each accepted connection it logs the peer address and spawns
-    `incoming_connection_handle`. Extracted from `initialize_tcp_listener` so it
+    `incoming_connection_handle`. Concurrency is bounded by a `tokio::sync::Semaphore`
+    sized to `--max-connections`: a permit is acquired *before* `accept()` (so at
+    capacity the loop stops pulling from the backlog — backpressure) and held by the
+    connection task until it closes. Extracted from `initialize_tcp_listener` so it
     can be driven by tests with a pre-bound (ephemeral-port) listener.
   - `incoming_connection_handle(arguments, source_stream)` (private) — sets up
     the per-connection bidirectional relay (see below).
@@ -124,8 +127,8 @@ valid level, so they cannot panic at runtime.)
 ## Dependencies
 
 - `tokio` (with `default-features = false` and only `io-util`, `macros`, `net`,
-  `rt-multi-thread`, `signal`, `time`) — async runtime, TCP, `timeout`, I/O
-  traits, and `ctrl_c` for graceful shutdown.
+  `rt-multi-thread`, `signal`, `sync`, `time`) — async runtime, TCP, `timeout`, I/O
+  traits, `Semaphore` (the connection cap), and `ctrl_c` for graceful shutdown.
 - `clap` (`std`, `derive`) — CLI parsing.
 - `env_logger` + `log` — logging frontend/facade.
 - `bytes` — `BytesMut` relay buffers.
@@ -149,6 +152,7 @@ to its users):
 -b, --bind-listener-addr <SOCKET_ADDR>       address to listen on (IP:port)
 -r, --remote-addr <SOCKET_ADDR>              destination address (IP:port)
 -t, --timeout <SECONDS>                      optional whole-connection idle timeout (1..=3153600000); waits indefinitely if omitted
+-m, --max-connections <N>                    max connections handled concurrently [default: 512] (1..)
 -f, --formatting <FORMATTING>                [default: lowerhex]  decimal|lowerhex|upperhex|binary|octal
 -s, --separator <STRING>                     byte separator in output [default: ":"]
 -p, --precision <PRECISION>                  [default: seconds]  seconds|milliseconds|microseconds|nanoseconds

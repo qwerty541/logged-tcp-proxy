@@ -37,18 +37,24 @@ const IO_TIMEOUT: Duration = Duration::from_secs(10);
 /// (never `localhost`, which can resolve to IPv6 on Windows).
 const LOOPBACK: &str = "127.0.0.1:0";
 
+/// A generous connection cap used by the helpers, so tests that open several
+/// concurrent connections are not throttled by the limit under test.
+const TEST_MAX_CONNECTIONS: u32 = 512;
+
 /// Build proxy `Arguments` pointing at `remote_addr`, with logging silenced so
 /// test output stays clean.
 fn test_arguments(
     bind_listener_addr: SocketAddr,
     remote_addr: SocketAddr,
     timeout: Option<u64>,
+    max_connections: u32,
 ) -> Arguments {
     Arguments {
         level: LoggingLevel::Off,
         bind_listener_addr,
         remote_addr,
         timeout,
+        max_connections,
         formatting: PayloadFormatingKind::LowerHex,
         separator: ":".to_string(),
         precision: TimestampPrecision::Seconds,
@@ -94,19 +100,37 @@ async fn spawn_echo_server() -> SocketAddr {
 /// loop itself is cancelled when the test's runtime is dropped at the end of the
 /// test, which also releases the ephemeral port.
 async fn spawn_proxy(remote_addr: SocketAddr) -> SocketAddr {
-    spawn_proxy_with_timeout(remote_addr, Some(IO_TIMEOUT.as_secs())).await
+    spawn_proxy_full(
+        remote_addr,
+        Some(IO_TIMEOUT.as_secs()),
+        TEST_MAX_CONNECTIONS,
+    )
+    .await
 }
 
 /// Like [`spawn_proxy`] but with an explicit `--timeout` value, where `None` is
 /// the default behaviour of no idle timeout.
 async fn spawn_proxy_with_timeout(remote_addr: SocketAddr, timeout: Option<u64>) -> SocketAddr {
+    spawn_proxy_full(remote_addr, timeout, TEST_MAX_CONNECTIONS).await
+}
+
+/// Like [`spawn_proxy`] but with an explicit `--max-connections` cap.
+async fn spawn_proxy_with_limit(remote_addr: SocketAddr, max_connections: u32) -> SocketAddr {
+    spawn_proxy_full(remote_addr, Some(IO_TIMEOUT.as_secs()), max_connections).await
+}
+
+async fn spawn_proxy_full(
+    remote_addr: SocketAddr,
+    timeout: Option<u64>,
+    max_connections: u32,
+) -> SocketAddr {
     let listener = TcpListener::bind(LOOPBACK)
         .await
         .expect("failed to bind proxy");
     let addr = listener.local_addr().expect("proxy local_addr");
     tokio::spawn(run_accept_loop(
         listener,
-        test_arguments(addr, remote_addr, timeout),
+        test_arguments(addr, remote_addr, timeout, max_connections),
     ));
     addr
 }
@@ -407,7 +431,13 @@ async fn bind_failure_returns_error() {
     let in_use_addr = occupier.local_addr().expect("occupier local_addr");
 
     // `remote_addr` is irrelevant: the bind fails before any connection is served.
-    let result = initialize_tcp_listener(test_arguments(in_use_addr, in_use_addr, None)).await;
+    let result = initialize_tcp_listener(test_arguments(
+        in_use_addr,
+        in_use_addr,
+        None,
+        TEST_MAX_CONNECTIONS,
+    ))
+    .await;
 
     assert!(
         result.is_err(),
@@ -695,4 +725,70 @@ fn timeout_argument_is_range_validated() {
         parse(&["-t", "18446744073709551615"]).is_err(),
         "u64::MAX (which would overflow the clock) is rejected"
     );
+}
+
+/// `--max-connections` bounds how many connections are handled at once: while the
+/// cap is reached, a further connection is accepted by the kernel but not served
+/// until a slot frees.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn caps_concurrent_connections() {
+    let echo_addr = spawn_echo_server().await;
+    let proxy_addr = spawn_proxy_with_limit(echo_addr, 1).await; // one connection at a time
+
+    // The first client takes the only slot and keeps it (stays open).
+    let mut first = connect(proxy_addr).await;
+    assert_round_trip(&mut first, b"first").await;
+
+    // The second client connects (the kernel completes the handshake into the
+    // backlog), but the proxy is at capacity, so it is NOT served yet: its data is
+    // not relayed back within a short window.
+    let mut second = connect(proxy_addr).await;
+    timeout(IO_TIMEOUT, second.write_all(b"second"))
+        .await
+        .expect("write timed out")
+        .expect("failed to write");
+    let mut buffer = [0u8; 16];
+    let while_capped = timeout(Duration::from_millis(500), second.read(&mut buffer)).await;
+    assert!(
+        while_capped.is_err(),
+        "the second connection must not be served while the cap is reached"
+    );
+
+    // Free the slot; the second connection is now served and its data round-trips.
+    drop(first);
+    let read_length = timeout(IO_TIMEOUT, second.read(&mut buffer))
+        .await
+        .expect("read timed out after a slot freed")
+        .expect("failed to read");
+    assert_eq!(
+        &buffer[0..read_length],
+        b"second",
+        "the second connection is served once a slot frees"
+    );
+}
+
+/// `--max-connections` has a default and rejects 0 (which would accept nothing).
+#[test]
+fn max_connections_has_a_default_and_rejects_zero() {
+    use clap::Parser;
+
+    fn parse(extra: &[&str]) -> Result<Arguments, clap::Error> {
+        let mut argv = vec!["logged_tcp_proxy", "-b", "127.0.0.1:0", "-r", "127.0.0.1:0"];
+        argv.extend_from_slice(extra);
+        Arguments::try_parse_from(argv)
+    }
+
+    assert_eq!(
+        parse(&[])
+            .expect("default max-connections should parse")
+            .max_connections,
+        512,
+    );
+    assert_eq!(
+        parse(&["-m", "32"])
+            .expect("an explicit max-connections should parse")
+            .max_connections,
+        32,
+    );
+    assert!(parse(&["-m", "0"]).is_err(), "0 is rejected");
 }

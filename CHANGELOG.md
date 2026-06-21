@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added a `--max-connections` option (default 512) that bounds how many connections are proxied concurrently; once the limit is reached, further incoming connections wait until a slot frees instead of being spawned without limit.
 - The proxy now shuts down gracefully on Ctrl-C (SIGINT): it stops accepting connections, closes in-flight connections, and exits cleanly with status `0`.
 - Added an integration test suite — in-crate relay tests (`src/tests.rs`) and a black-box test of the compiled binary (`scripts/integration_test.py`) — covering data relay, teardown, concurrency, error handling, Ctrl-C shutdown, and real HTTP/MODBUS exchanges.
 
