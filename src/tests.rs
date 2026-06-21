@@ -9,7 +9,7 @@
 
 use crate::args::Arguments;
 use crate::args::LoggingLevel;
-use crate::args::PayloadFormatingKind;
+use crate::args::PayloadFormattingKind;
 use crate::args::TimestampPrecision;
 use crate::conn::initialize_tcp_listener;
 use crate::conn::run_accept_loop;
@@ -55,7 +55,7 @@ fn test_arguments(
         remote_addr,
         timeout,
         max_connections,
-        formatting: PayloadFormatingKind::LowerHex,
+        formatting: PayloadFormattingKind::LowerHex,
         separator: ":".to_string(),
         precision: TimestampPrecision::Seconds,
     }
