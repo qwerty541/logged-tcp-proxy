@@ -89,6 +89,8 @@ Options:
           Address of remote server
   -t, --timeout <TIMEOUT>
           Idle timeout for the connection, in seconds: the connection is closed once both directions have been silent for this long. If omitted, the proxy waits indefinitely (until a peer closes the connection or Ctrl-C)
+  -m, --max-connections <MAX_CONNECTIONS>
+          Maximum number of connections processed concurrently. Once this many are active, further incoming connections wait until a slot frees [default: 512]
   -f, --formatting <FORMATTING>
           Formatting of console payload output, [default: lowerhex] [possible values: decimal, lowerhex, upperhex, binary, octal]
   -s, --separator <SEPARATOR>

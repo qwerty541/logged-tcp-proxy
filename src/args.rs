@@ -238,6 +238,10 @@ pub struct Arguments {
     /// indefinitely (until a peer closes the connection or Ctrl-C).
     #[arg(short, long, value_parser = clap::value_parser!(u64).range(1..=MAX_TIMEOUT_SECONDS))]
     pub timeout: Option<u64>,
+    /// Maximum number of connections processed concurrently. Once this many are
+    /// active, further incoming connections wait until a slot frees.
+    #[arg(short, long, default_value = "512", value_parser = clap::value_parser!(u32).range(1..))]
+    pub max_connections: u32,
     /// Formatting of console payload output,
     #[arg(short, long, default_value = "lowerhex")]
     pub formatting: PayloadFormattingKind,
