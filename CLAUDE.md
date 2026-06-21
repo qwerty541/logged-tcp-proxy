@@ -183,7 +183,10 @@ need to be requested each time:
   regressions are caught: the in-crate tests in [`src/tests.rs`](src/tests.rs)
   and/or the black-box [`scripts/integration_test.py`](scripts/integration_test.py).
 - **Docs** — update this `CLAUDE.md` and [`README.md`](README.md) wherever they
-  describe what changed (behavior, CLI options, architecture).
+  describe what changed (behavior, CLI options, architecture). Also keep
+  [`CONTRIBUTING.md`](CONTRIBUTING.md) in sync when a change touches what it
+  documents — the source-tree layout, the build/test/lint/run commands, the MSRV
+  or edition, or the contribution workflow.
 - **Changelog** — add a user-facing entry under `## Unreleased` in
   [`CHANGELOG.md`](CHANGELOG.md) (Keep a Changelog format) for anything worth
   mentioning to users.
