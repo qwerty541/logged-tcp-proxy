@@ -19,6 +19,7 @@ documentation:
           - SECURITY.md
           - CONTRIBUTING.md
           - CLAUDE.md
+          - RELEASE.md
 
 github_actions:
   - changed-files:
