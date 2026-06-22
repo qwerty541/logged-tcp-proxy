@@ -11,6 +11,7 @@
   - [Building](#building)
   - [Running](#running)
   - [Linting \& Formatting](#linting--formatting)
+  - [Testing](#testing)
 - [Project Structure](#project-structure)
 - [Feature Guidelines](#feature-guidelines)
 - [Performance \& Reliability](#performance--reliability)
@@ -93,16 +94,39 @@ cargo run -- \
 - Formatting: `cargo fmt --all`
 - Linting: `cargo clippy --all-targets --all-features -- -D warnings`
 
+### Testing
+
+Run the in-crate integration tests (they spin up their own servers on ephemeral
+loopback ports, so no setup is required):
+
+```bash
+cargo test
+```
+
+There is also a black-box test that drives the **compiled binary** end to end. It
+uses only the Python standard library (no `pip` packages):
+
+```bash
+python3 scripts/integration_test.py
+```
+
+Both run automatically in CI on every push and pull request.
+
 ## Project Structure
+
+This is a **binary-only** crate — there is intentionally no `lib` target.
 
 - `src/` — application source code
   - `args.rs` — CLI arguments, value enums, and payload formatter selection
-  - `conn.rs` — TCP proxying logic, logging, timeouts, and task management
-  - `lib.rs` — re-exports for library consumers
+  - `conn.rs` — TCP proxying core: accept loop, connection cap, bidirectional relay, logging, and idle timeout
   - `main.rs` — binary entry point and logger initialization
+  - `tests.rs` — in-crate integration tests (compiled only under `#[cfg(test)]`)
+- `scripts/integration_test.py` — black-box test that drives the compiled binary
 - `Cargo.toml` — crate metadata (edition 2024, MSRV 1.85.1, licenses)
 - `README.md` — usage, installation, and reference docs
 - `CHANGELOG.md` — release notes
+- `CONTRIBUTING.md` — this guide
+- `RELEASE.md` — the release checklist
 - `SECURITY.md` — how to report security issues
 - `CODE_OF_CONDUCT.md` — community standards
 - `LICENSE-APACHE`, `LICENSE-MIT` — dual license files
@@ -126,6 +150,7 @@ cargo run -- \
 
 - Update [README.md](./README.md) and examples when adding or changing CLI arguments
 - Add changelog entries under `## Unreleased` and reference commits/issues in [CHANGELOG.md](./CHANGELOG.md)
+- Keep this guide current when a change touches what it documents — the project structure, the development commands, or the MSRV/edition
 
 ## Commit & PR Etiquette
 
@@ -135,6 +160,7 @@ cargo run -- \
 - Before submitting, ensure locally:
   - `cargo fmt --all`
   - `cargo clippy --all-targets --all-features -- -D warnings`
+  - `cargo test`
 
 ## Security
 
