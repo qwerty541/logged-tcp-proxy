@@ -51,8 +51,11 @@ All source lives in `src/`:
     `incoming_connection_handle`. Concurrency is bounded by a `tokio::sync::Semaphore`
     sized to `--max-connections`: a permit is acquired *before* `accept()` (so at
     capacity the loop stops pulling from the backlog — backpressure) and held by the
-    connection task until it closes. Extracted from `initialize_tcp_listener` so it
-    can be driven by tests with a pre-bound (ephemeral-port) listener.
+    connection task until it closes. An `accept()` error is logged and retried after
+    an exponential backoff (`next_accept_backoff`, 10 ms → 1 s, reset on success), so
+    a persistent failure such as file-descriptor exhaustion can't spin the loop.
+    Extracted from `initialize_tcp_listener` so it can be driven by tests with a
+    pre-bound (ephemeral-port) listener.
   - `incoming_connection_handle(arguments, source_stream)` (private) — sets up
     the per-connection bidirectional relay (see below).
   - `relay(reader, writer, activity)` (private, generic) — copies bytes in one

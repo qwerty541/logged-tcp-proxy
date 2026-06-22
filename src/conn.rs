@@ -18,6 +18,7 @@ use tokio::io::{self};
 use tokio::net as tokio_net;
 use tokio::sync::Semaphore;
 use tokio::time::Instant;
+use tokio::time::sleep;
 use tokio::time::sleep_until;
 
 pub async fn initialize_tcp_listener(arguments: Arguments) -> io::Result<()> {
@@ -50,6 +51,19 @@ pub async fn initialize_tcp_listener(arguments: Arguments) -> io::Result<()> {
     Ok(())
 }
 
+/// Minimum delay before retrying after a failed `accept()`. Applied to every
+/// accept error so the loop can never busy-spin.
+pub(crate) const ACCEPT_BACKOFF_MIN: Duration = Duration::from_millis(10);
+/// Maximum accept-retry delay. The backoff grows while errors persist (e.g.
+/// file-descriptor exhaustion) but never exceeds this.
+pub(crate) const ACCEPT_BACKOFF_MAX: Duration = Duration::from_secs(1);
+
+/// The next accept-retry delay: double the current one, capped at
+/// [`ACCEPT_BACKOFF_MAX`].
+pub(crate) fn next_accept_backoff(current: Duration) -> Duration {
+    (current * 2).min(ACCEPT_BACKOFF_MAX)
+}
+
 /// Accept connections on an already-bound listener and spawn a relay handler for
 /// each one. Split out from [`initialize_tcp_listener`] so tests can drive it
 /// with a listener bound to an ephemeral port.
@@ -59,6 +73,7 @@ pub(crate) async fn run_accept_loop(listener: tokio_net::TcpListener, arguments:
     // pulling connections off the backlog (natural backpressure) instead of
     // spawning unbounded handlers; each handler holds its permit until it closes.
     let connection_limit = Arc::new(Semaphore::new(arguments.max_connections as usize));
+    let mut accept_backoff = ACCEPT_BACKOFF_MIN;
     loop {
         let Ok(permit) = connection_limit.clone().acquire_owned().await else {
             break; // the semaphore is never closed, so this only ends a stuck loop
@@ -66,6 +81,7 @@ pub(crate) async fn run_accept_loop(listener: tokio_net::TcpListener, arguments:
         let cloned_arguments = arguments.clone();
         match listener.accept().await {
             Ok((stream, addr)) => {
+                accept_backoff = ACCEPT_BACKOFF_MIN; // recovered -> reset the backoff
                 log::info!("Incoming connection from {addr}");
                 tokio::spawn(async move {
                     incoming_connection_handle(cloned_arguments, stream).await;
@@ -74,7 +90,14 @@ pub(crate) async fn run_accept_loop(listener: tokio_net::TcpListener, arguments:
             }
             Err(e) => {
                 log::error!("Failed to accept incoming connection due to {e}");
-                drop(permit); // nothing was accepted, so free the slot and retry
+                drop(permit); // nothing was accepted, so free the slot
+
+                // Back off before retrying. A persistent error (e.g. file-descriptor
+                // exhaustion, where the connection stays in the backlog) would
+                // otherwise spin the loop at 100% CPU and flood the log; the delay
+                // grows while the error persists and resets once an accept succeeds.
+                sleep(accept_backoff).await;
+                accept_backoff = next_accept_backoff(accept_backoff);
             }
         }
     }
