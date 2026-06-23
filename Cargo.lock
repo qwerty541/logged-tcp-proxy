@@ -390,7 +390,7 @@ dependencies = [
 
 [[package]]
 name = "logged_tcp_proxy"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "clap",
