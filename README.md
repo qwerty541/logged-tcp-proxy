@@ -59,7 +59,7 @@ $ logged_tcp_proxy --bind-listener-addr 127.0.0.1:20502 --remote-addr 127.0.0.1:
 Run the following command and wait until the crate is compiled:
 
 ```sh
-$ cargo install --git https://github.com/qwerty541/logged-tcp-proxy.git --tag v0.1.2 logged_tcp_proxy
+$ cargo install --git https://github.com/qwerty541/logged-tcp-proxy.git --tag v0.2.0 logged_tcp_proxy
 ```
 
 Also you can remove tag option to install the latest development version.
