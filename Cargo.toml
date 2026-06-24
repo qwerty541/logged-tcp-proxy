@@ -19,7 +19,7 @@ rust-version = "1.85.1"
 include = ["src/**/*", "Cargo.*", "CHANGELOG.md", "LICENSE-*", "README.md"]
 
 [dependencies]
-bytes = "1.11.1"
+bytes = "1.12.0"
 clap = { version = "4.6.1", features = ["std", "derive"] }
 env_logger = "0.11.10"
 logged-stream = "0.6.0"
