@@ -792,3 +792,29 @@ fn max_connections_has_a_default_and_rejects_zero() {
     );
     assert!(parse(&["-m", "0"]).is_err(), "0 is rejected");
 }
+
+/// The accept-error backoff grows while errors persist but never exceeds the cap,
+/// so a persistent `accept()` failure can't busy-spin the accept loop.
+#[test]
+fn accept_backoff_grows_and_caps() {
+    use crate::conn::ACCEPT_BACKOFF_MAX;
+    use crate::conn::ACCEPT_BACKOFF_MIN;
+    use crate::conn::next_accept_backoff;
+
+    assert!(ACCEPT_BACKOFF_MIN < ACCEPT_BACKOFF_MAX);
+    let mut delay = ACCEPT_BACKOFF_MIN;
+    let mut previous = delay;
+    for _ in 0..16 {
+        delay = next_accept_backoff(delay);
+        assert!(
+            delay >= previous,
+            "the backoff must not shrink while errors persist"
+        );
+        assert!(delay <= ACCEPT_BACKOFF_MAX, "the backoff is capped");
+        previous = delay;
+    }
+    assert_eq!(
+        delay, ACCEPT_BACKOFF_MAX,
+        "the backoff reaches and holds at the cap"
+    );
+}
