@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.2.0 (23.06.2026)
 
 ### Added
 
@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A close on one side of a proxied connection is now forwarded to the other side (graceful shutdown), and each direction keeps relaying until it ends, so a response that is still arriving when the client finishes sending is no longer dropped.
 - The proxy no longer panics and abruptly drops a client when it cannot reach the destination: the connect failure is logged, that client connection is closed cleanly, and the listener keeps serving other clients.
 - The proxy no longer panics on a listener bind failure (for example when the address is already in use); it logs the error and exits with a non-zero status.
+- The accept loop now backs off before retrying after an `accept()` error (an exponential delay from 10 ms up to 1 s, reset on success) instead of retrying immediately, so a persistent failure such as file-descriptor exhaustion can no longer spin the loop at 100% CPU or flood the log.
 
 ### Documentation
 
