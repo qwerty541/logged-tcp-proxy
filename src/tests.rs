@@ -55,6 +55,9 @@ fn test_arguments(
         remote_addr,
         timeout,
         max_connections,
+        // Irrelevant to the relay path under test: the worker-thread count only
+        // shapes the runtime built in `main`, which these tests do not exercise.
+        threads: 4,
         formatting: PayloadFormattingKind::LowerHex,
         separator: ":".to_string(),
         precision: TimestampPrecision::Seconds,
@@ -791,6 +794,40 @@ fn max_connections_has_a_default_and_rejects_zero() {
         32,
     );
     assert!(parse(&["-m", "0"]).is_err(), "0 is rejected");
+}
+
+/// `--threads` has a default and is range-validated: `0` (which Tokio forbids) and
+/// values above the cap are rejected, while the bounds and a normal value parse.
+#[test]
+fn threads_has_a_default_and_is_range_validated() {
+    use clap::Parser;
+
+    fn parse(extra: &[&str]) -> Result<Arguments, clap::Error> {
+        let mut argv = vec!["logged_tcp_proxy", "-b", "127.0.0.1:0", "-r", "127.0.0.1:0"];
+        argv.extend_from_slice(extra);
+        Arguments::try_parse_from(argv)
+    }
+
+    assert_eq!(parse(&[]).expect("default threads should parse").threads, 4,);
+    assert_eq!(
+        parse(&["--threads", "16"])
+            .expect("an explicit threads should parse")
+            .threads,
+        16,
+    );
+    assert!(
+        parse(&["--threads", "1"]).is_ok(),
+        "the minimum (1) is accepted"
+    );
+    assert!(
+        parse(&["--threads", "1024"]).is_ok(),
+        "the maximum (1024) is accepted"
+    );
+    assert!(parse(&["--threads", "0"]).is_err(), "0 is rejected");
+    assert!(
+        parse(&["--threads", "1025"]).is_err(),
+        "above the maximum is rejected"
+    );
 }
 
 /// The accept-error backoff grows while errors persist but never exceeds the cap,
