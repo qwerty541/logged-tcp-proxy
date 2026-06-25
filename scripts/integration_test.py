@@ -453,6 +453,64 @@ def test_modbus(binary):
     print("OK [modbus] real MODBUS read-holding-registers relayed and logged")
 
 
+def test_threads(binary):
+    """The runtime honors `--threads`: a custom count still relays bytes, and an
+    invalid count (0, which Tokio forbids) is rejected at startup."""
+    # A valid custom thread count must produce a working runtime that relays.
+    echo_server, echo_port = start_echo_server()
+    proxy_port = free_port()
+    payload = bytes([0xDE, 0xAD, 0xBE, 0xEF])
+    proxy = subprocess.Popen(
+        [
+            binary,
+            "--bind-listener-addr", "%s:%d" % (HOST, proxy_port),
+            "--remote-addr", "%s:%d" % (HOST, echo_port),
+            "--threads", "8",
+            "--level", "info",
+        ],
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    try:
+        if not wait_for_listener(proxy_port):
+            fail("[threads] proxy did not start listening with --threads 8")
+        with socket.create_connection((HOST, proxy_port), timeout=IO_TIMEOUT) as client:
+            client.settimeout(IO_TIMEOUT)
+            client.sendall(payload)
+            received = recv_exact(client, len(payload))
+        if received != payload:
+            fail("[threads] echo mismatch: sent %r, got %r" % (payload, received))
+    finally:
+        output = stop_proxy(proxy)
+        echo_server.close()
+    if "panic" in output.lower():
+        print("---- proxy output ----\n" + output + "----------------------")
+        fail("[threads] proxy panicked with a custom thread count")
+
+    # An out-of-range count (0) must be rejected by clap with a non-zero exit.
+    completed = subprocess.run(
+        [
+            binary,
+            "--bind-listener-addr", "%s:%d" % (HOST, free_port()),
+            "--remote-addr", "%s:%d" % (HOST, free_port()),
+            "--threads", "0",
+        ],
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=15,
+    )
+    if completed.returncode == 0:
+        fail("[threads] expected a non-zero exit for --threads 0")
+    if "panic" in completed.stdout.lower():
+        print("---- proxy output ----\n" + completed.stdout + "----------------------")
+        fail("[threads] proxy panicked instead of rejecting --threads 0")
+    print("OK [threads] custom thread count relays and 0 is rejected")
+
+
 def main():
     binary = binary_path()
     print("testing binary: " + binary)
@@ -462,6 +520,7 @@ def main():
     test_modbus(binary)
     test_unreachable_remote(binary)
     test_bind_failure(binary)
+    test_threads(binary)
     test_ctrl_c(binary)
     print("integration test passed")
 
