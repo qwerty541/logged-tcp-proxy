@@ -793,6 +793,66 @@ fn max_connections_has_a_default_and_rejects_zero() {
     assert!(parse(&["-m", "0"]).is_err(), "0 is rejected");
 }
 
+/// The CLI value enums must expose exactly the value names the proxy has always
+/// accepted. These names used to come from hand-written `ValueEnum`/`FromStr`/
+/// `Display` impls and are now derived (`#[derive(ValueEnum)]` plus the
+/// `argument_impl_*` macros). This test pins the derived `to_possible_value()`
+/// names — and the `FromStr` → `Display` round-trip — to those exact strings, so a
+/// casing change in the derive (e.g. clap's default kebab-case turning `LowerHex`
+/// into `lower-hex`) can't silently break `--formatting lowerhex` or any other
+/// documented value, or the matching `default_value` on `Arguments`.
+#[test]
+fn value_enum_names_match_documented_cli_values() {
+    use clap::ValueEnum;
+
+    macro_rules! check {
+        ($ty:ty, $expected:expr) => {{
+            let expected: Vec<String> = $expected.iter().map(|s: &&str| s.to_string()).collect();
+
+            // `to_possible_value()` (now derived) must yield exactly the documented
+            // names, in declaration order.
+            let names: Vec<String> = <$ty>::value_variants()
+                .iter()
+                .map(|variant| variant.to_possible_value().unwrap().get_name().to_owned())
+                .collect();
+            assert_eq!(
+                names, expected,
+                concat!(
+                    stringify!($ty),
+                    ": possible-value names drifted from the documented CLI values"
+                ),
+            );
+
+            // Each documented name must parse back (FromStr) and `Display` must
+            // reproduce it unchanged.
+            for name in &expected {
+                let parsed = name.parse::<$ty>().expect(concat!(
+                    stringify!($ty),
+                    ": every documented value must parse via FromStr"
+                ));
+                assert_eq!(
+                    parsed.to_string(),
+                    *name,
+                    concat!(stringify!($ty), ": Display must round-trip the value name"),
+                );
+            }
+        }};
+    }
+
+    check!(
+        LoggingLevel,
+        &["trace", "debug", "info", "warn", "error", "off"]
+    );
+    check!(
+        PayloadFormattingKind,
+        &["decimal", "lowerhex", "upperhex", "binary", "octal"]
+    );
+    check!(
+        TimestampPrecision,
+        &["seconds", "milliseconds", "microseconds", "nanoseconds"]
+    );
+}
+
 /// The accept-error backoff grows while errors persist but never exceeds the cap,
 /// so a persistent `accept()` failure can't busy-spin the accept loop.
 #[test]
