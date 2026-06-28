@@ -1,6 +1,5 @@
 use clap::Parser;
 use clap::ValueEnum;
-use clap::builder::PossibleValue;
 use env_logger::TimestampPrecision as EnvLoggerTimestampPrecision;
 use log::LevelFilter;
 use logged_stream::BinaryFormatter;
@@ -13,7 +12,41 @@ use std::fmt;
 use std::net;
 use std::str::FromStr;
 
-#[derive(Debug, Clone, Copy)]
+macro_rules! argument_impl_from_str {
+    ($type:ty) => {
+        impl FromStr for $type {
+            type Err = String;
+
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                for variant in Self::value_variants() {
+                    if variant
+                        .to_possible_value()
+                        .expect("no values are skipped")
+                        .matches(s, false)
+                    {
+                        return Ok(*variant);
+                    }
+                }
+                Err(format!("Invalid variant: {}", s))
+            }
+        }
+    };
+}
+
+macro_rules! argument_impl_display {
+    ($type:ty) => {
+        impl fmt::Display for $type {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.to_possible_value()
+                    .expect("no values are skipped")
+                    .get_name()
+                    .fmt(f)
+            }
+        }
+    };
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum LoggingLevel {
     Trace,
     Debug,
@@ -21,52 +54,6 @@ pub enum LoggingLevel {
     Warn,
     Error,
     Off,
-}
-
-impl ValueEnum for LoggingLevel {
-    fn value_variants<'a>() -> &'a [Self] {
-        &[
-            Self::Trace,
-            Self::Debug,
-            Self::Info,
-            Self::Warn,
-            Self::Error,
-            Self::Off,
-        ]
-    }
-
-    fn to_possible_value(&self) -> Option<PossibleValue> {
-        Some(match self {
-            Self::Trace => PossibleValue::new("trace"),
-            Self::Debug => PossibleValue::new("debug"),
-            Self::Info => PossibleValue::new("info"),
-            Self::Warn => PossibleValue::new("warn"),
-            Self::Error => PossibleValue::new("error"),
-            Self::Off => PossibleValue::new("off"),
-        })
-    }
-}
-
-impl FromStr for LoggingLevel {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        for variant in Self::value_variants() {
-            if variant.to_possible_value().unwrap().matches(s, false) {
-                return Ok(*variant);
-            }
-        }
-        Err(format!("Invalid variant: {s}"))
-    }
-}
-
-impl fmt::Display for LoggingLevel {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.to_possible_value()
-            .expect("no values are skipped")
-            .get_name()
-            .fmt(f)
-    }
 }
 
 impl From<LoggingLevel> for LevelFilter {
@@ -82,57 +69,18 @@ impl From<LoggingLevel> for LevelFilter {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+argument_impl_from_str!(LoggingLevel);
+argument_impl_display!(LoggingLevel);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum PayloadFormattingKind {
     Decimal,
+    #[value(name = "lowerhex")]
     LowerHex,
+    #[value(name = "upperhex")]
     UpperHex,
     Binary,
     Octal,
-}
-
-impl ValueEnum for PayloadFormattingKind {
-    fn value_variants<'a>() -> &'a [Self] {
-        &[
-            Self::Decimal,
-            Self::LowerHex,
-            Self::UpperHex,
-            Self::Binary,
-            Self::Octal,
-        ]
-    }
-
-    fn to_possible_value(&self) -> Option<PossibleValue> {
-        Some(match self {
-            Self::Decimal => PossibleValue::new("decimal"),
-            Self::LowerHex => PossibleValue::new("lowerhex"),
-            Self::UpperHex => PossibleValue::new("upperhex"),
-            Self::Binary => PossibleValue::new("binary"),
-            Self::Octal => PossibleValue::new("octal"),
-        })
-    }
-}
-
-impl FromStr for PayloadFormattingKind {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        for variant in Self::value_variants() {
-            if variant.to_possible_value().unwrap().matches(s, false) {
-                return Ok(*variant);
-            }
-        }
-        Err(format!("Invalid variant: {s}"))
-    }
-}
-
-impl fmt::Display for PayloadFormattingKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.to_possible_value()
-            .expect("no values are skipped")
-            .get_name()
-            .fmt(f)
-    }
 }
 
 pub fn get_formatter_by_kind(
@@ -152,54 +100,15 @@ pub fn get_formatter_by_kind(
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+argument_impl_from_str!(PayloadFormattingKind);
+argument_impl_display!(PayloadFormattingKind);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum TimestampPrecision {
     Seconds,
     Milliseconds,
     Microseconds,
     Nanoseconds,
-}
-
-impl ValueEnum for TimestampPrecision {
-    fn value_variants<'a>() -> &'a [Self] {
-        &[
-            Self::Seconds,
-            Self::Milliseconds,
-            Self::Microseconds,
-            Self::Nanoseconds,
-        ]
-    }
-
-    fn to_possible_value(&self) -> Option<PossibleValue> {
-        Some(match self {
-            Self::Seconds => PossibleValue::new("seconds"),
-            Self::Milliseconds => PossibleValue::new("milliseconds"),
-            Self::Microseconds => PossibleValue::new("microseconds"),
-            Self::Nanoseconds => PossibleValue::new("nanoseconds"),
-        })
-    }
-}
-
-impl FromStr for TimestampPrecision {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        for variant in Self::value_variants() {
-            if variant.to_possible_value().unwrap().matches(s, false) {
-                return Ok(*variant);
-            }
-        }
-        Err(format!("Invalid variant: {s}"))
-    }
-}
-
-impl fmt::Display for TimestampPrecision {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.to_possible_value()
-            .expect("no values are skipped")
-            .get_name()
-            .fmt(f)
-    }
 }
 
 impl From<TimestampPrecision> for EnvLoggerTimestampPrecision {
@@ -212,6 +121,9 @@ impl From<TimestampPrecision> for EnvLoggerTimestampPrecision {
         }
     }
 }
+
+argument_impl_from_str!(TimestampPrecision);
+argument_impl_display!(TimestampPrecision);
 
 /// Maximum accepted `--timeout`, in seconds (~100 years). Generous enough to cover
 /// any realistic idle timeout, yet small enough that the connection-start instant
