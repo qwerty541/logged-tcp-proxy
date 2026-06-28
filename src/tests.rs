@@ -815,6 +815,13 @@ fn threads_has_a_default_and_is_range_validated() {
             .threads,
         16,
     );
+    assert_eq!(
+        parse(&["-w", "16"])
+            .expect("the -w short flag should parse")
+            .threads,
+        16,
+        "-w is the short alias for --threads",
+    );
     assert!(
         parse(&["--threads", "1"]).is_ok(),
         "the minimum (1) is accepted"

@@ -255,7 +255,8 @@ pub struct Arguments {
     pub max_connections: u32,
     /// Number of worker threads used by the async runtime. Raise it to handle more
     /// concurrent traffic on multi-core machines.
-    #[arg(long, default_value = "4", value_parser = clap::value_parser!(u32).range(1..=MAX_THREADS))]
+    // `short = 'w'` ("worker"): the natural `-t` is already taken by `--timeout`.
+    #[arg(short = 'w', long, default_value = "4", value_parser = clap::value_parser!(u32).range(1..=MAX_THREADS))]
     pub threads: u32,
     /// Formatting of console payload output,
     #[arg(short, long, default_value = "lowerhex")]

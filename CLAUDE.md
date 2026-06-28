@@ -158,7 +158,7 @@ to its users):
 -r, --remote-addr <SOCKET_ADDR>              destination address (IP:port)
 -t, --timeout <SECONDS>                      optional whole-connection idle timeout (1..=3153600000); waits indefinitely if omitted
 -m, --max-connections <N>                    max connections handled concurrently [default: 512] (1..)
-    --threads <N>                            async runtime worker threads [default: 4] (1..=1024)
+-w, --threads <N>                            async runtime worker threads [default: 4] (1..=1024)
 -f, --formatting <FORMATTING>                [default: lowerhex]  decimal|lowerhex|upperhex|binary|octal
 -s, --separator <STRING>                     byte separator in output [default: ":"]
 -p, --precision <PRECISION>                  [default: seconds]  seconds|milliseconds|microseconds|nanoseconds
