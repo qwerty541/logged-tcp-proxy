@@ -220,6 +220,17 @@ impl From<TimestampPrecision> for EnvLoggerTimestampPrecision {
 /// reached by omitting the flag, so there is no need for larger finite values.)
 const MAX_TIMEOUT_SECONDS: u64 = 60 * 60 * 24 * 365 * 100;
 
+/// Upper bound for `--threads`. The async runtime is almost always I/O bound, so a
+/// handful of threads already saturate a typical proxy workload; this cap leaves
+/// generous headroom for many-core machines while rejecting absurd values that would
+/// try to spawn a pathological number of OS threads. (Tokio also forbids a count of
+/// `0`, which the `1..` lower bound on the range already excludes.)
+///
+/// Typed `i64` to match the bound `clap::value_parser!(u32)` expects for its range
+/// (it validates `u32` arguments against an `i64` range, just as `--max-connections`
+/// relies on its `1..` literal being inferred as `i64`).
+const MAX_THREADS: i64 = 1024;
+
 #[derive(Debug, Clone, Parser)]
 #[command(next_line_help = true)]
 #[command(author, version, about, long_about = None)]
@@ -242,6 +253,11 @@ pub struct Arguments {
     /// active, further incoming connections wait until a slot frees.
     #[arg(short, long, default_value = "512", value_parser = clap::value_parser!(u32).range(1..))]
     pub max_connections: u32,
+    /// Number of worker threads used by the async runtime. Raise it to handle more
+    /// concurrent traffic on multi-core machines.
+    // `short = 'w'` ("worker"): the natural `-t` is already taken by `--timeout`.
+    #[arg(short = 'w', long, default_value = "4", value_parser = clap::value_parser!(u32).range(1..=MAX_THREADS))]
+    pub threads: u32,
     /// Formatting of console payload output,
     #[arg(short, long, default_value = "lowerhex")]
     pub formatting: PayloadFormattingKind,

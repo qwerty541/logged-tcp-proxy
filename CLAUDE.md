@@ -29,10 +29,12 @@ server so you can watch the raw bytes of the conversation.
 
 All source lives in `src/`:
 
-- [`src/main.rs`](src/main.rs) — entry point. Starts a Tokio runtime
-  (`#[tokio::main(flavor = "multi_thread", worker_threads = 4)]`), parses CLI
-  arguments, configures `env_logger` (level, timestamp precision, no target/
-  module path), and calls `conn::initialize_tcp_listener`.
+- [`src/main.rs`](src/main.rs) — entry point. Parses CLI arguments, configures
+  `env_logger` (level, timestamp precision, no target/module path), then builds a
+  multi-threaded Tokio runtime by hand (`tokio::runtime::Builder::new_multi_thread`)
+  whose worker-thread count comes from `--threads` (default 4, instead of a
+  compile-time constant), and drives `conn::initialize_tcp_listener` on it via
+  `block_on`. A runtime that fails to build is logged and the process exits `1`.
 - [`src/args.rs`](src/args.rs) — the `clap`-derived `Arguments` struct (all
   fields `pub`) plus three CLI value enums and their `ValueEnum` / `FromStr` /
   `Display` impls:
@@ -156,6 +158,7 @@ to its users):
 -r, --remote-addr <SOCKET_ADDR>              destination address (IP:port)
 -t, --timeout <SECONDS>                      optional whole-connection idle timeout (1..=3153600000); waits indefinitely if omitted
 -m, --max-connections <N>                    max connections handled concurrently [default: 512] (1..)
+-w, --threads <N>                            async runtime worker threads [default: 4] (1..=1024)
 -f, --formatting <FORMATTING>                [default: lowerhex]  decimal|lowerhex|upperhex|binary|octal
 -s, --separator <STRING>                     byte separator in output [default: ":"]
 -p, --precision <PRECISION>                  [default: seconds]  seconds|milliseconds|microseconds|nanoseconds
