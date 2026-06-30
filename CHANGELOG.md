@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Added a `--threads` (`-w`) option (default 4, range 1..=1024) that controls how many worker threads the async runtime uses. The count was previously fixed at 4 at compile time; raising it lets the proxy use more cores under heavy concurrent load.
 
+### Documentation
+
+- Expanded the README with a purpose-first description, a features list, a runnable quickstart, and a guide to reading the console output (including what the `<` and `>` markers mean). Also documented that the relayed payload is logged at the `debug` level, so raising `--level` above `debug` hides it.
+
 ## v0.2.0 (23.06.2026)
 
 ### Added
