@@ -143,9 +143,29 @@ const MAX_TIMEOUT_SECONDS: u64 = 60 * 60 * 24 * 365 * 100;
 /// relies on its `1..` literal being inferred as `i64`).
 const MAX_THREADS: i64 = 1024;
 
+/// Custom help template to include the source code URL and author name.
+const HELP_TEMPLATE: &str = "\
+{before-help}{name} {version}
+
+{about}
+
+Author: {author}
+Source: https://github.com/qwerty541/logged-tcp-proxy
+
+{usage-heading} {usage}
+
+{all-args}{after-help}
+";
+
 #[derive(Debug, Clone, Parser)]
 #[command(next_line_help = true)]
-#[command(author, version, about, long_about = None)]
+#[command(
+    author = clap::crate_authors!("\n"),
+    version,
+    about,
+    long_about = None,
+    help_template = HELP_TEMPLATE
+)]
 pub struct Arguments {
     /// Application logging level.
     #[arg(short, long, default_value = "debug")]
