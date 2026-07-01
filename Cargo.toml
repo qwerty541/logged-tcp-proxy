@@ -20,7 +20,7 @@ include = ["src/**/*", "Cargo.*", "CHANGELOG.md", "LICENSE-*", "README.md"]
 
 [dependencies]
 bytes = "1.12.0"
-clap = { version = "4.6.1", features = ["std", "derive"] }
+clap = { version = "4.6.1", features = ["std", "derive", "cargo"] }
 env_logger = "0.11.10"
 logged-stream = "0.6.0"
 log = "0.4.33"
