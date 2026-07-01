@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Updated the `--help` output template to include author information and repository link.
 
+### Documentation
+
+- Expanded the README with a purpose-first description, a features list, a runnable quickstart, and a guide to reading the console output (including what the `<` and `>` markers mean). Also documented that the relayed payload is logged at the `debug` level, so raising `--level` above `debug` hides it.
+
 ## v0.2.0 (23.06.2026)
 
 ### Added
