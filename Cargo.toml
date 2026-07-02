@@ -3,7 +3,7 @@ name = "logged_tcp_proxy"
 version = "0.2.0"
 edition = "2024"
 authors = ["Alexandr Garbuzov <qwerty541zxc@gmail.com>"]
-description = "Command line interface for proxying TCP connections with payload output into console which can be formatted different ways."
+description = "Command line interface for proxying TCP connections, printing the payload to the console in a chosen numeric format."
 keywords = ["network", "tcp", "proxy", "logging", "debugging"]
 categories = [
     "command-line-utilities",

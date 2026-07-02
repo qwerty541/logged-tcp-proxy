@@ -170,7 +170,7 @@ pub struct Arguments {
     /// Application logging level.
     #[arg(short, long, default_value = "debug")]
     pub level: LoggingLevel,
-    /// Address on which TCP listener should be binded.
+    /// Address on which the TCP listener should be bound.
     #[arg(short, long)]
     pub bind_listener_addr: net::SocketAddr,
     /// Address of remote server.
@@ -190,7 +190,7 @@ pub struct Arguments {
     // `short = 'w'` ("worker"): the natural `-t` is already taken by `--timeout`.
     #[arg(short = 'w', long, default_value = "4", value_parser = clap::value_parser!(u32).range(1..=MAX_THREADS))]
     pub threads: u32,
-    /// Formatting of console payload output,
+    /// Formatting of console payload output.
     #[arg(short, long, default_value = "lowerhex")]
     pub formatting: PayloadFormattingKind,
     /// Console payload output bytes separator.
