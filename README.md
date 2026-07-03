@@ -74,7 +74,7 @@ Run the following command and wait until the crate is compiled:
 $ cargo install logged_tcp_proxy
 ```
 
-Now you can run compiled binary:
+Now you can run the compiled binary:
 
 ```sh
 $ logged_tcp_proxy --bind-listener-addr 127.0.0.1:20502 --remote-addr 127.0.0.1:20582
@@ -88,9 +88,9 @@ Run the following command and wait until the crate is compiled:
 $ cargo install --git https://github.com/qwerty541/logged-tcp-proxy.git --tag v0.2.0 logged_tcp_proxy
 ```
 
-Also you can remove tag option to install the latest development version.
+To install the latest development version instead, omit the `--tag v0.2.0` option; the crate is then built from the tip of the default branch.
 
-Now you can run compiled binary:
+Now you can run the compiled binary:
 
 ```sh
 $ logged_tcp_proxy --bind-listener-addr 127.0.0.1:20502 --remote-addr 127.0.0.1:20582
@@ -138,7 +138,7 @@ Below is a list of currently supported options.
 
 ```
 $ logged_tcp_proxy --help
-Command line interface for proxying TCP connections with payload output into console which can be formatted different ways.
+Command line interface for proxying TCP connections, printing the payload to the console in a chosen numeric format.
 
 Usage: logged_tcp_proxy [OPTIONS] --bind-listener-addr <BIND_LISTENER_ADDR> --remote-addr <REMOTE_ADDR>
 
@@ -146,7 +146,7 @@ Options:
   -l, --level <LEVEL>
           Application logging level [default: debug] [possible values: trace, debug, info, warn, error, off]
   -b, --bind-listener-addr <BIND_LISTENER_ADDR>
-          Address on which TCP listener should be binded
+          Address on which the TCP listener should be bound
   -r, --remote-addr <REMOTE_ADDR>
           Address of remote server
   -t, --timeout <TIMEOUT>
@@ -156,7 +156,7 @@ Options:
   -w, --threads <THREADS>
           Number of worker threads used by the async runtime. Raise it to handle more concurrent traffic on multi-core machines [default: 4]
   -f, --formatting <FORMATTING>
-          Formatting of console payload output, [default: lowerhex] [possible values: decimal, lowerhex, upperhex, binary, octal]
+          Formatting of console payload output [default: lowerhex] [possible values: decimal, lowerhex, upperhex, binary, octal]
   -s, --separator <SEPARATOR>
           Console payload output bytes separator [default: :]
   -p, --precision <PRECISION>
