@@ -128,7 +128,8 @@ The request and response bytes now appear in the proxy's console, each line mark
 stop the proxy; it shuts down cleanly and exits with status `0`. See the
 [Example](#example) below for an annotated run and how to read the output.
 
-> **Note:** `--remote-addr` must point at an address where something is already
+> [!NOTE] 
+> `--remote-addr` must point at an address where something is already
 > listening. If nothing is there, the proxy logs `Failed to connect to destination ...`,
 > closes that client, and keeps serving other connections — no payload is printed.
 
@@ -167,7 +168,8 @@ Options:
           Print version
 ```
 
-> **Note:** the relayed payload is logged at the `debug` level. Keep `--level` at
+> [!NOTE] 
+> the relayed payload is logged at the `debug` level. Keep `--level` at
 > `debug` (the default) or `trace` to see it — setting `--level info` or higher hides
 > the payload and leaves only the lifecycle (`INFO`) lines.
 
