@@ -25,9 +25,11 @@
 <summary>Table of contents</summary>
 
 - [Description](#description)
+- [Features](#features)
 - [Installation](#installation)
   - [From crates.io (Recommended)](#from-cratesio-recommended)
   - [From git repository](#from-git-repository)
+- [Quickstart](#quickstart)
 - [Options](#options)
 - [Example](#example)
 - [License](#license)
@@ -36,7 +38,31 @@
 
 ## Description
 
-This repository provides a command line interface for proxying TCP connections with payload output into the console. Payload output can be formatted in different ways: hexadecimal (lowercase and uppercase), decimal, octal and binary.
+`logged_tcp_proxy` is a small command-line TCP proxy for debugging binary protocols.
+You place it between a client and a server: it listens on a local address, relays
+bytes in both directions unchanged, and prints the raw payload of the conversation to
+your console so you can see exactly what is being sent. In other words, it is a
+transparent man-in-the-middle — point your client at the proxy's listen address
+(`--bind-listener-addr`) instead of the real server, and set the real server as
+`--remote-addr`.
+
+It was originally written to debug MODBUS/TCP traffic, but it parses nothing and works
+for any TCP protocol. Payload output can be formatted as hexadecimal (lowercase or
+uppercase), decimal, octal, or binary, with a configurable byte separator.
+
+## Features
+
+- Transparent bidirectional TCP relay (man-in-the-middle) — parses nothing, forwards
+  bytes unchanged, and preserves half-close so data still in flight in the other
+  direction is delivered before the connection closes.
+- Logs the payload in lowercase hex, uppercase hex, decimal, octal, or binary, with a
+  configurable byte separator (`--separator`).
+- Optional whole-connection idle timeout (`--timeout`); waits indefinitely by default.
+- Bounded concurrency with backpressure (`--max-connections`, default 512) — serves
+  many clients at once and stops accepting new ones only when at capacity.
+- Configurable async runtime worker threads (`--threads`, default 4).
+- Configurable timestamp precision (`--precision`) and logging level (`--level`).
+- Graceful shutdown on Ctrl-C (exits with status 0).
 
 ## Installation
 
@@ -69,6 +95,42 @@ Now you can run compiled binary:
 ```sh
 $ logged_tcp_proxy --bind-listener-addr 127.0.0.1:20502 --remote-addr 127.0.0.1:20582
 ```
+
+## Quickstart
+
+To see traffic flowing you need three processes: a destination server, the proxy, and
+a client. The walkthrough below uses only Python's standard library and `curl`, so
+nothing extra needs to be installed.
+
+**1. Start a throwaway destination server** on port `20582` (this stands in for the
+real server whose traffic you want to inspect):
+
+```sh
+python3 -m http.server 20582
+```
+
+**2. Run the proxy** in a second terminal, listening on `20502` and forwarding to the
+server from step 1:
+
+```sh
+logged_tcp_proxy --bind-listener-addr 127.0.0.1:20502 --remote-addr 127.0.0.1:20582
+```
+
+**3. Send a request through the proxy** — to port `20502` (the proxy), not `20582`
+(the server) — from a third terminal:
+
+```sh
+curl http://127.0.0.1:20502/
+```
+
+The request and response bytes now appear in the proxy's console, each line marked
+`<` (bytes read from the client) or `>` (bytes written back to it). Press Ctrl-C to
+stop the proxy; it shuts down cleanly and exits with status `0`. See the
+[Example](#example) below for an annotated run and how to read the output.
+
+> **Note:** `--remote-addr` must point at an address where something is already
+> listening. If nothing is there, the proxy logs `Failed to connect to destination ...`,
+> closes that client, and keeps serving other connections — no payload is printed.
 
 ## Options
 
@@ -105,9 +167,14 @@ Options:
           Print version
 ```
 
+> **Note:** the relayed payload is logged at the `debug` level. Keep `--level` at
+> `debug` (the default) or `trace` to see it — setting `--level info` or higher hides
+> the payload and leaves only the lifecycle (`INFO`) lines.
+
 ## Example
 
-Below is an example of using this command line tool as proxy between device and data storage server with command and console output.
+Below is an annotated run proxying a MODBUS/TCP exchange — the command that is run,
+followed by the console output it produces.
 
 ```
 $ logged_tcp_proxy --bind-listener-addr 127.0.0.1:20502 --remote-addr 127.0.0.1:20582
@@ -123,6 +190,18 @@ $ logged_tcp_proxy --bind-listener-addr 127.0.0.1:20502 --remote-addr 127.0.0.1:
 [2023-05-04T02:40:18Z DEBUG] > 00:0b:00:00:00:06:6f:03:03:e8:00:01
 [2023-05-04T02:40:18Z DEBUG] < 00:0b:00:00:00:05:6f:03:02:00:00
 ```
+
+How to read this output:
+
+- `INFO` lines are lifecycle events — the listener binding (`Listener bound to ...`,
+  the proxy's "ready" signal) and each accepted connection (`Incoming connection from ...`).
+- `DEBUG` lines are the relayed payload, shown here in the default lowercase-hex
+  format with `:` separators (change with `--formatting` and `--separator`).
+- `<` marks bytes **read from the client** (source) side; `>` marks bytes **written
+  back to the client** (these originate from the remote server).
+- Both directions of the conversation are logged once, on the client (source)
+  connection, so the same bytes are never printed twice.
+- The leading `[...Z ...]` is the timestamp, at `--precision` granularity.
 
 ## License
 
