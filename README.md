@@ -135,38 +135,22 @@ stop the proxy; it shuts down cleanly and exits with status `0`. See the
 
 ## Options
 
-Below is a list of currently supported options.
+Below are the supported command-line options. The general form is
+`logged_tcp_proxy [OPTIONS] --bind-listener-addr <SOCKET_ADDR> --remote-addr <SOCKET_ADDR>`.
 
-```
-$ logged_tcp_proxy --help
-Command line interface for proxying TCP connections, printing the payload to the console in a chosen numeric format.
+| Option | Description | Default | Possible values |
+| --- | --- | --- | --- |
+| `-l, --level <LEVEL>` | Application logging level | `debug` | `trace`, `debug`, `info`, `warn`, `error`, `off` |
+| `-b, --bind-listener-addr <SOCKET_ADDR>` | Address the TCP listener is bound to | _(required)_ | an `IP:port` address |
+| `-r, --remote-addr <SOCKET_ADDR>` | Address of the remote (destination) server | _(required)_ | an `IP:port` address |
+| `-t, --timeout <SECONDS>` | Whole-connection idle timeout: closes the connection once both directions have been idle this long. Omit to wait indefinitely | _(none)_ | `1..=3153600000` |
+| `-m, --max-connections <N>` | Maximum connections handled concurrently; once this many are active, further connections wait for a free slot (backpressure) | `512` | `1..` |
+| `-w, --threads <N>` | Worker threads used by the async runtime | `4` | `1..=1024` |
+| `-f, --formatting <FORMATTING>` | Console payload output format | `lowerhex` | `decimal`, `lowerhex`, `upperhex`, `binary`, `octal` |
+| `-s, --separator <STRING>` | Byte separator in the console payload output | `:` | any string |
+| `-p, --precision <PRECISION>` | Timestamp precision | `seconds` | `seconds`, `milliseconds`, `microseconds`, `nanoseconds` |
 
-Usage: logged_tcp_proxy [OPTIONS] --bind-listener-addr <BIND_LISTENER_ADDR> --remote-addr <REMOTE_ADDR>
-
-Options:
-  -l, --level <LEVEL>
-          Application logging level [default: debug] [possible values: trace, debug, info, warn, error, off]
-  -b, --bind-listener-addr <BIND_LISTENER_ADDR>
-          Address on which the TCP listener should be bound
-  -r, --remote-addr <REMOTE_ADDR>
-          Address of remote server
-  -t, --timeout <TIMEOUT>
-          Idle timeout for the connection, in seconds: the connection is closed once both directions have been silent for this long. If omitted, the proxy waits indefinitely (until a peer closes the connection or Ctrl-C)
-  -m, --max-connections <MAX_CONNECTIONS>
-          Maximum number of connections processed concurrently. Once this many are active, further incoming connections wait until a slot frees [default: 512]
-  -w, --threads <THREADS>
-          Number of worker threads used by the async runtime. Raise it to handle more concurrent traffic on multi-core machines [default: 4]
-  -f, --formatting <FORMATTING>
-          Formatting of console payload output [default: lowerhex] [possible values: decimal, lowerhex, upperhex, binary, octal]
-  -s, --separator <SEPARATOR>
-          Console payload output bytes separator [default: :]
-  -p, --precision <PRECISION>
-          Timestamp precision [default: seconds] [possible values: seconds, milliseconds, microseconds, nanoseconds]
-  -h, --help
-          Print help
-  -V, --version
-          Print version
-```
+Run `logged_tcp_proxy --help` for the canonical usage output (it also lists `-h, --help` and `-V, --version`).
 
 > [!NOTE] 
 > the relayed payload is logged at the `debug` level. Keep `--level` at
