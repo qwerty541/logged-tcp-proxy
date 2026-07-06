@@ -54,6 +54,13 @@ All source lives in `src/`:
   - `PayloadFormattingKind` → selects a `logged_stream` formatter via
     `get_formatter_by_kind`.
   - `TimestampPrecision` → converts into `env_logger`'s timestamp precision.
+
+  Separately, the `remote_addr` field is a `TargetAddr` enum (a free-form parsed
+  type, **not** a `ValueEnum`): its `parse_remote_addr` value-parser accepts a
+  literal `IP:port` (→ `TargetAddr::Socket`, connected to directly, never resolved)
+  or a `hostname:port` (→ `TargetAddr::Named`, resolved via DNS at connect time),
+  validating only the address *shape* at parse time so an obviously malformed value
+  is rejected at startup. `--bind-listener-addr` stays a literal `net::SocketAddr`.
 - [`src/conn.rs`](src/conn.rs) — the networking core:
   - `initialize_tcp_listener(arguments)` (`pub`, returns `io::Result<()>`) — binds
     the `TcpListener` (returning `Err` on a bind failure instead of panicking),
@@ -72,6 +79,11 @@ All source lives in `src/`:
     pre-bound (ephemeral-port) listener.
   - `incoming_connection_handle(arguments, source_stream)` (private) — sets up
     the per-connection bidirectional relay (see below).
+  - `connect_to_target(target)` (private) — opens the destination `TcpStream` for
+    one client: a `TargetAddr::Socket` is dialed directly (no DNS), a
+    `TargetAddr::Named` is resolved via DNS here (once per connection, tokio trying
+    each resolved address in turn). A resolution failure is returned as an
+    `io::Error` and handled by the caller exactly like any other connect failure.
   - `relay(reader, writer, activity)` (private, generic) — copies bytes in one
     direction until end-of-stream or a read/write error, recording each chunk on
     the shared `activity` clock (when one is given), then shuts down `writer` to
@@ -93,10 +105,13 @@ All source lives in `src/`:
 
 1. Wraps the accepted client socket ("source") in a `logged_stream::LoggedStream`
    and `tokio::io::split`s it into read/write halves.
-2. Connects a fresh `TcpStream` to `arguments.remote_addr` ("destination"). If the
-   connect fails it logs the error and **returns** (no panic); dropping the source
-   halves closes the already-accepted client connection cleanly. On success it
-   wraps the stream in another `LoggedStream` and splits it.
+2. Connects a fresh `TcpStream` to `arguments.remote_addr` ("destination") via
+   `connect_to_target`. When the remote is a `hostname:port`, the name is resolved
+   via DNS at this point (once per connection); a literal `IP:port` is dialed
+   directly with no lookup. If resolution or the connect fails it logs the error and
+   **returns** (no panic); dropping the source halves closes the already-accepted
+   client connection cleanly. On success — for a hostname target — it logs the
+   resolved peer address, then wraps the stream in another `LoggedStream` and splits it.
 3. Relays both directions concurrently with `tokio::join!` over two `relay`
    futures (one connection task, not two spawned per-direction tasks), running
    each direction to completion:
@@ -130,8 +145,10 @@ Runtime failures are handled gracefully rather than by panicking:
 
 - **Bind failure** (e.g. the listen address is in use) — logged, and
   `initialize_tcp_listener` returns `Err`; `main` then exits with status `1`.
-- **Destination connect failure** — logged; that one connection is dropped
-  cleanly (closing the client), the listener keeps serving other clients.
+- **Destination connect or DNS-resolution failure** — logged; that one connection
+  is dropped cleanly (closing the client), the listener keeps serving other clients.
+  (A `hostname:port` remote is resolved per connection, so an unresolvable name is
+  handled exactly like an unreachable address.)
 - **Per-connection relay errors** — end that direction and tear the connection
   down (see the relay description above); they never abort the process.
 - **Ctrl-C (SIGINT)** — stops the accept loop; in-flight connections are closed as
@@ -145,7 +162,9 @@ valid level, so they cannot panic at runtime.)
 
 - `tokio` (with `default-features = false` and only `io-util`, `macros`, `net`,
   `rt-multi-thread`, `signal`, `sync`, `time`) — async runtime, TCP, `timeout`, I/O
-  traits, `Semaphore` (the connection cap), and `ctrl_c` for graceful shutdown.
+  traits, `Semaphore` (the connection cap), `ctrl_c` for graceful shutdown, and DNS
+  resolution of a `hostname:port` remote (via `net`'s `ToSocketAddrs`, whose blocking
+  `getaddrinfo` is offloaded to the `rt-multi-thread` pool — no extra feature needed).
 - `clap` (`std`, `derive`) — CLI parsing.
 - `env_logger` + `log` — logging frontend/facade.
 - `bytes` — `BytesMut` relay buffers.
@@ -167,7 +186,7 @@ to its users):
 ```
 -l, --level <LEVEL>                          [default: debug]  trace|debug|info|warn|error|off
 -b, --bind-listener-addr <SOCKET_ADDR>       address to listen on (IP:port)
--r, --remote-addr <SOCKET_ADDR>              destination address (IP:port)
+-r, --remote-addr <REMOTE_ADDR>              destination address (IP:port or hostname:port)
 -t, --timeout <SECONDS>                      optional whole-connection idle timeout (1..=3153600000); waits indefinitely if omitted
 -m, --max-connections <N>                    max connections handled concurrently [default: 512] (1..)
 -w, --threads <N>                            async runtime worker threads [default: 4] (1..=1024)
@@ -176,8 +195,11 @@ to its users):
 -p, --precision <PRECISION>                  [default: seconds]  seconds|milliseconds|microseconds|nanoseconds
 ```
 
-Both `--bind-listener-addr` and `--remote-addr` are parsed as `std::net::SocketAddr`,
-so they must currently be literal `IP:port` (no hostnames).
+`--bind-listener-addr` is parsed as `std::net::SocketAddr`, so it must be a literal
+`IP:port` (a listener binds a concrete local interface, not a name). `--remote-addr`
+accepts either a literal `IP:port` or a `hostname:port`; a hostname is resolved via
+DNS lazily, each time a connection is opened (see the `TargetAddr` enum in
+[`src/args.rs`](src/args.rs)).
 
 ## Build / test / lint
 
