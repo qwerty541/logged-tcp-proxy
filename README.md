@@ -55,6 +55,9 @@ uppercase), decimal, octal, or binary, with a configurable byte separator.
 - Transparent bidirectional TCP relay (man-in-the-middle) — parses nothing, forwards
   bytes unchanged, and preserves half-close so data still in flight in the other
   direction is delivered before the connection closes.
+- Point `--remote-addr` at a literal `IP:port` or a `hostname:port` — a hostname is
+  resolved via DNS each time a connection is opened (so DNS changes and failover are
+  picked up), while `--bind-listener-addr` stays a literal address.
 - Logs the payload in lowercase hex, uppercase hex, decimal, octal, or binary, with a
   configurable byte separator (`--separator`).
 - Optional whole-connection idle timeout (`--timeout`); waits indefinitely by default.
