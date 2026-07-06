@@ -125,6 +125,76 @@ impl From<TimestampPrecision> for EnvLoggerTimestampPrecision {
 argument_impl_from_str!(TimestampPrecision);
 argument_impl_display!(TimestampPrecision);
 
+/// A remote destination supplied on the command line: either a literal socket
+/// address (`IP:port`, connected to directly) or a `host:port` whose host is
+/// resolved via DNS when a connection is opened. Only `--remote-addr` accepts a
+/// hostname; `--bind-listener-addr` stays a literal [`net::SocketAddr`], since a
+/// listener binds a concrete local interface rather than a name.
+#[derive(Debug, Clone)]
+pub enum TargetAddr {
+    /// A literal `IP:port`. Connected to directly, without touching DNS.
+    Socket(net::SocketAddr),
+    /// A `host:port` whose host is resolved to one or more addresses each time a
+    /// connection is opened (so DNS changes are picked up between connections).
+    Named { host: String, port: u16 },
+}
+
+impl FromStr for TargetAddr {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // Try a literal socket address first. This accepts both `IPv4:port` and
+        // the bracketed `[IPv6]:port` form, so the `host:port` split below never
+        // has to disambiguate the colons inside an IPv6 literal.
+        if let Ok(addr) = s.parse::<net::SocketAddr>() {
+            return Ok(TargetAddr::Socket(addr));
+        }
+        // Otherwise treat it as `host:port`, splitting on the last colon (a
+        // hostname never contains one). Only the *shape* is validated here; the
+        // DNS lookup is deferred to connect time.
+        match s.rsplit_once(':') {
+            None => Err(format!(
+                "invalid remote address `{s}`: expected `IP:port` or `host:port`"
+            )),
+            Some(("", _)) => Err(format!("invalid remote address `{s}`: the host is empty")),
+            Some((host, _)) if host.contains(':') => Err(format!(
+                "invalid remote address `{s}`: an IPv6 address must use the bracketed `[address]:port` form"
+            )),
+            Some((host, port)) => match port.parse::<u16>() {
+                Ok(port) => Ok(TargetAddr::Named {
+                    host: host.to_string(),
+                    port,
+                }),
+                Err(_) => Err(format!(
+                    "invalid remote address `{s}`: `{port}` is not a valid port number (0-65535)"
+                )),
+            },
+        }
+    }
+}
+
+impl fmt::Display for TargetAddr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TargetAddr::Socket(addr) => addr.fmt(f),
+            TargetAddr::Named { host, port } => write!(f, "{host}:{port}"),
+        }
+    }
+}
+
+impl From<net::SocketAddr> for TargetAddr {
+    fn from(addr: net::SocketAddr) -> Self {
+        TargetAddr::Socket(addr)
+    }
+}
+
+/// clap value parser for [`TargetAddr`]: validates the `IP:port` / `host:port`
+/// shape at parse time (without resolving DNS), so an obviously malformed value
+/// is rejected at startup rather than on the first connection.
+fn parse_remote_addr(s: &str) -> Result<TargetAddr, String> {
+    s.parse()
+}
+
 /// Maximum accepted `--timeout`, in seconds (~100 years). Generous enough to cover
 /// any realistic idle timeout, yet small enough that the connection-start instant
 /// plus the timeout can never overflow the monotonic clock on any platform — which
@@ -173,9 +243,10 @@ pub struct Arguments {
     /// Address on which the TCP listener should be bound.
     #[arg(short, long)]
     pub bind_listener_addr: net::SocketAddr,
-    /// Address of remote server.
-    #[arg(short, long)]
-    pub remote_addr: net::SocketAddr,
+    /// Address of remote server, as `IP:port` or `hostname:port` (a hostname is
+    /// resolved via DNS when each connection is opened).
+    #[arg(short, long, value_parser = parse_remote_addr)]
+    pub remote_addr: TargetAddr,
     /// Idle timeout for the connection, in seconds: the connection is closed once
     /// both directions have been silent for this long. If omitted, the proxy waits
     /// indefinitely (until a peer closes the connection or Ctrl-C).
