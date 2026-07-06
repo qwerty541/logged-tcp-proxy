@@ -511,14 +511,110 @@ def test_threads(binary):
     print("OK [threads] custom thread count relays and 0 is rejected")
 
 
+def test_hostname_remote(binary):
+    """A `hostname:port` remote (not just IP:port) is resolved via DNS and relayed.
+    Uses `localhost`, which resolves to loopback on every platform; the echo server
+    listens on 127.0.0.1 and the proxy's connect tries every resolved address, so it
+    reaches the echo regardless of IPv4/IPv6 ordering."""
+    echo_server, echo_port = start_echo_server()
+    proxy_port = free_port()
+    payload = bytes([0x00, 0x11, 0x22, 0x33, 0x44])
+    proxy = subprocess.Popen(
+        [
+            binary,
+            "--bind-listener-addr", "%s:%d" % (HOST, proxy_port),
+            "--remote-addr", "localhost:%d" % echo_port,
+            "--level", "debug",
+        ],
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    try:
+        if not wait_for_listener(proxy_port):
+            fail("[hostname] proxy did not start listening with a hostname remote")
+        with socket.create_connection((HOST, proxy_port), timeout=IO_TIMEOUT) as client:
+            client.settimeout(IO_TIMEOUT)
+            client.sendall(payload)
+            received = recv_exact(client, len(payload))
+        if received != payload:
+            fail("[hostname] echo mismatch through a hostname remote: sent %r, got %r"
+                 % (payload, received))
+        time.sleep(0.3)
+    finally:
+        output = stop_proxy(proxy)
+        echo_server.close()
+
+    if "panic" in output.lower():
+        print("---- proxy output ----\n" + output + "----------------------")
+        fail("[hostname] proxy panicked relaying through a hostname remote")
+    # The payload must still be logged (lowerhex default), proving the relay ran.
+    expected = ":".join("%02x" % b for b in payload)
+    if expected not in output:
+        print("---- proxy output ----\n" + output + "----------------------")
+        fail("[hostname] payload not logged through a hostname remote")
+    # And the resolved-peer INFO line names the hostname target it reached.
+    if ("Connected to destination localhost:%d" % echo_port) not in output:
+        print("---- proxy output ----\n" + output + "----------------------")
+        fail("[hostname] proxy did not log the resolved destination for a hostname remote")
+    print("OK [hostname] relayed through localhost:%d (DNS-resolved) and logged it" % echo_port)
+
+
+def test_unresolvable_remote(binary):
+    """A hostname that never resolves is handled like an unreachable remote: the
+    proxy logs the failure, closes the client cleanly, keeps serving, and does not
+    panic. `.invalid` is reserved (RFC 6761) and never resolves on any platform, so
+    this needs no network."""
+    proxy_port = free_port()
+    proxy = subprocess.Popen(
+        [
+            binary,
+            "--bind-listener-addr", "%s:%d" % (HOST, proxy_port),
+            "--remote-addr", "nonexistent.invalid:65000",
+            "--level", "debug",
+        ],
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    try:
+        if not wait_for_listener(proxy_port):
+            fail("[unresolvable-remote] proxy did not start listening")
+
+        with socket.create_connection((HOST, proxy_port), timeout=IO_TIMEOUT) as client:
+            client.settimeout(IO_TIMEOUT)
+            try:
+                leftover = client.recv(16)  # expect a clean close (b"")
+            except ConnectionResetError:
+                leftover = b""
+            if leftover != b"":
+                fail("[unresolvable-remote] proxy did not close the client, got %r" % leftover)
+
+        time.sleep(0.2)
+        if proxy.poll() is not None:
+            fail("[unresolvable-remote] proxy exited after a failed resolution (rc=%s)"
+                 % proxy.returncode)
+    finally:
+        output = stop_proxy(proxy)
+
+    if "panic" in output.lower():
+        print("---- proxy output ----\n" + output + "----------------------")
+        fail("[unresolvable-remote] proxy panicked instead of handling the DNS failure")
+    print("OK [unresolvable-remote] DNS failure logged, client closed, proxy still serving")
+
+
 def main():
     binary = binary_path()
     print("testing binary: " + binary)
     run_case(binary, "lowerhex", ":", lambda b: "%02x" % b)
     run_case(binary, "upperhex", "-", lambda b: "%02X" % b)
+    test_hostname_remote(binary)
     test_http(binary)
     test_modbus(binary)
     test_unreachable_remote(binary)
+    test_unresolvable_remote(binary)
     test_bind_failure(binary)
     test_threads(binary)
     test_ctrl_c(binary)
