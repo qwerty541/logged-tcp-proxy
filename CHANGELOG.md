@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Added a `--threads` (`-w`) option (default 4, range 1..=1024) that controls how many worker threads the async runtime uses. The count was previously fixed at 4 at compile time; raising it lets the proxy use more cores under heavy concurrent load.
+- `--remote-addr` now accepts a `hostname:port` (resolved via DNS) in addition to a literal `IP:port`, so you can point the proxy at a named service without looking up its address first. The hostname is resolved lazily each time a connection is opened, so DNS changes and failover are picked up between connections, and — for a hostname target — the resolved destination address is logged on connect; a literal `IP:port` is still connected to directly with no lookup. An unresolvable name is handled like an unreachable address (logged, that client closed, the proxy keeps serving). `--bind-listener-addr` continues to require a literal address.
 
 ### Changed
 

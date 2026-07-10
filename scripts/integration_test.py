@@ -65,21 +65,8 @@ def binary_path():
     return path
 
 
-def start_echo_server():
-    """Start an echo server on an ephemeral port. Returns (socket, port)."""
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.bind((HOST, 0))
-    server.listen(8)
-    port = server.getsockname()[1]
-
-    def serve():
-        while True:
-            try:
-                conn, _ = server.accept()
-            except OSError:
-                return  # server socket closed -> stop
-            threading.Thread(target=echo_conn, args=(conn,), daemon=True).start()
+def _serve_echo(server):
+    """Run the accept + echo loop for an already-bound, listening server socket."""
 
     def echo_conn(conn):
         with conn:
@@ -92,7 +79,42 @@ def start_echo_server():
                     return
                 conn.sendall(data)
 
+    def serve():
+        while True:
+            try:
+                conn, _ = server.accept()
+            except OSError:
+                return  # server socket closed -> stop
+            threading.Thread(target=echo_conn, args=(conn,), daemon=True).start()
+
     threading.Thread(target=serve, daemon=True).start()
+
+
+def start_echo_server():
+    """Start an echo server on an ephemeral 127.0.0.1 port. Returns (socket, port)."""
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind((HOST, 0))
+    server.listen(8)
+    port = server.getsockname()[1]
+    _serve_echo(server)
+    return server, port
+
+
+def start_echo_server_on(host):
+    """Start an echo server bound to whatever address family `host` resolves to (via
+    getaddrinfo — the same name the proxy resolves), so the server is actually
+    listening on an address the proxy will reach, even where `host` (e.g. `localhost`)
+    resolves only to IPv6. Returns (socket, port)."""
+    family, socktype, proto, _canon, sockaddr = socket.getaddrinfo(
+        host, 0, type=socket.SOCK_STREAM
+    )[0]
+    server = socket.socket(family, socktype, proto)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(sockaddr)
+    server.listen(8)
+    port = server.getsockname()[1]
+    _serve_echo(server)
     return server, port
 
 
@@ -511,14 +533,111 @@ def test_threads(binary):
     print("OK [threads] custom thread count relays and 0 is rejected")
 
 
+def test_hostname_remote(binary):
+    """A `hostname:port` remote (not just IP:port) is resolved via DNS and relayed.
+    The echo server binds on whatever address family `localhost` resolves to (the same
+    name the proxy resolves), so it is reachable even on hosts where `localhost` is
+    IPv6-only; the proxy also tries every resolved address, so v4/v6 ordering never
+    matters."""
+    echo_server, echo_port = start_echo_server_on("localhost")
+    proxy_port = free_port()
+    payload = bytes([0x00, 0x11, 0x22, 0x33, 0x44])
+    proxy = subprocess.Popen(
+        [
+            binary,
+            "--bind-listener-addr", "%s:%d" % (HOST, proxy_port),
+            "--remote-addr", "localhost:%d" % echo_port,
+            "--level", "debug",
+        ],
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    try:
+        if not wait_for_listener(proxy_port):
+            fail("[hostname] proxy did not start listening with a hostname remote")
+        with socket.create_connection((HOST, proxy_port), timeout=IO_TIMEOUT) as client:
+            client.settimeout(IO_TIMEOUT)
+            client.sendall(payload)
+            received = recv_exact(client, len(payload))
+        if received != payload:
+            fail("[hostname] echo mismatch through a hostname remote: sent %r, got %r"
+                 % (payload, received))
+        time.sleep(0.3)
+    finally:
+        output = stop_proxy(proxy)
+        echo_server.close()
+
+    if "panic" in output.lower():
+        print("---- proxy output ----\n" + output + "----------------------")
+        fail("[hostname] proxy panicked relaying through a hostname remote")
+    # The payload must still be logged (lowerhex default), proving the relay ran.
+    expected = ":".join("%02x" % b for b in payload)
+    if expected not in output:
+        print("---- proxy output ----\n" + output + "----------------------")
+        fail("[hostname] payload not logged through a hostname remote")
+    # And the resolved-peer INFO line names the hostname target it reached.
+    if ("Connected to destination localhost:%d" % echo_port) not in output:
+        print("---- proxy output ----\n" + output + "----------------------")
+        fail("[hostname] proxy did not log the resolved destination for a hostname remote")
+    print("OK [hostname] relayed through localhost:%d (DNS-resolved) and logged it" % echo_port)
+
+
+def test_unresolvable_remote(binary):
+    """A hostname that never resolves is handled like an unreachable remote: the
+    proxy logs the failure, closes the client cleanly, keeps serving, and does not
+    panic. `.invalid` is reserved (RFC 6761) and never resolves on any platform, so
+    this needs no network."""
+    proxy_port = free_port()
+    proxy = subprocess.Popen(
+        [
+            binary,
+            "--bind-listener-addr", "%s:%d" % (HOST, proxy_port),
+            "--remote-addr", "nonexistent.invalid:65000",
+            "--level", "debug",
+        ],
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    try:
+        if not wait_for_listener(proxy_port):
+            fail("[unresolvable-remote] proxy did not start listening")
+
+        with socket.create_connection((HOST, proxy_port), timeout=IO_TIMEOUT) as client:
+            client.settimeout(IO_TIMEOUT)
+            try:
+                leftover = client.recv(16)  # expect a clean close (b"")
+            except ConnectionResetError:
+                leftover = b""
+            if leftover != b"":
+                fail("[unresolvable-remote] proxy did not close the client, got %r" % leftover)
+
+        time.sleep(0.2)
+        if proxy.poll() is not None:
+            fail("[unresolvable-remote] proxy exited after a failed resolution (rc=%s)"
+                 % proxy.returncode)
+    finally:
+        output = stop_proxy(proxy)
+
+    if "panic" in output.lower():
+        print("---- proxy output ----\n" + output + "----------------------")
+        fail("[unresolvable-remote] proxy panicked instead of handling the DNS failure")
+    print("OK [unresolvable-remote] DNS failure logged, client closed, proxy still serving")
+
+
 def main():
     binary = binary_path()
     print("testing binary: " + binary)
     run_case(binary, "lowerhex", ":", lambda b: "%02x" % b)
     run_case(binary, "upperhex", "-", lambda b: "%02X" % b)
+    test_hostname_remote(binary)
     test_http(binary)
     test_modbus(binary)
     test_unreachable_remote(binary)
+    test_unresolvable_remote(binary)
     test_bind_failure(binary)
     test_threads(binary)
     test_ctrl_c(binary)

@@ -1,4 +1,5 @@
 use crate::args::Arguments;
+use crate::args::TargetAddr;
 use crate::args::get_formatter_by_kind;
 use bytes::BytesMut;
 use logged_stream::ConsoleLogger;
@@ -103,6 +104,20 @@ pub(crate) async fn run_accept_loop(listener: tokio_net::TcpListener, arguments:
     }
 }
 
+/// Open a connection to the proxy's remote destination for one accepted client.
+/// A literal `IP:port` target is dialed directly; a `hostname:port` target is
+/// resolved via DNS at this point (once per connection), with tokio trying each
+/// resolved address in turn until one connects. A resolution failure surfaces as
+/// an `Err` here, handled by the caller exactly like any other connect failure.
+async fn connect_to_target(target: &TargetAddr) -> io::Result<tokio_net::TcpStream> {
+    match target {
+        TargetAddr::Socket(addr) => tokio_net::TcpStream::connect(*addr).await,
+        TargetAddr::Named { host, port } => {
+            tokio_net::TcpStream::connect((host.as_str(), *port)).await
+        }
+    }
+}
+
 async fn incoming_connection_handle(arguments: Arguments, source_stream: tokio_net::TcpStream) {
     let (source_stream_read_half, source_stream_write_half) = io::split(LoggedStream::new(
         source_stream,
@@ -110,7 +125,7 @@ async fn incoming_connection_handle(arguments: Arguments, source_stream: tokio_n
         DefaultFilter,
         ConsoleLogger::new_unchecked("debug"),
     ));
-    let destination_stream = match tokio_net::TcpStream::connect(arguments.remote_addr).await {
+    let destination_stream = match connect_to_target(&arguments.remote_addr).await {
         Ok(stream) => stream,
         Err(error) => {
             log::error!(
@@ -121,6 +136,21 @@ async fn incoming_connection_handle(arguments: Arguments, source_stream: tokio_n
             return;
         }
     };
+    // For a hostname target, report that the connection was established, appending
+    // which resolved address was actually reached when that is available (useful when
+    // a name has several records or sits behind DNS-based failover). The `peer_addr()`
+    // detail is best-effort: the line is always logged, so a rare `peer_addr()` failure
+    // never silently swallows it. (A literal `IP:port` target would just repeat itself,
+    // so it is left out.)
+    if let TargetAddr::Named { .. } = &arguments.remote_addr {
+        match destination_stream.peer_addr() {
+            Ok(peer) => log::info!(
+                "Connected to destination {} ({peer})",
+                arguments.remote_addr
+            ),
+            Err(_) => log::info!("Connected to destination {}", arguments.remote_addr),
+        }
+    }
     let (destination_stream_read_half, destination_stream_write_half) =
         io::split(LoggedStream::new(
             destination_stream,

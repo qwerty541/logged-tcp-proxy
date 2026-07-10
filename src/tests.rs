@@ -10,6 +10,7 @@
 use crate::args::Arguments;
 use crate::args::LoggingLevel;
 use crate::args::PayloadFormattingKind;
+use crate::args::TargetAddr;
 use crate::args::TimestampPrecision;
 use crate::conn::initialize_tcp_listener;
 use crate::conn::run_accept_loop;
@@ -52,7 +53,7 @@ fn test_arguments(
     Arguments {
         level: LoggingLevel::Off,
         bind_listener_addr,
-        remote_addr,
+        remote_addr: remote_addr.into(),
         timeout,
         max_connections,
         // Irrelevant to the relay path under test: the worker-thread count only
@@ -135,6 +136,21 @@ async fn spawn_proxy_full(
         listener,
         test_arguments(addr, remote_addr, timeout, max_connections),
     ));
+    addr
+}
+
+/// Like [`spawn_proxy`] but with an explicit remote target, so a test can point
+/// the proxy at a `hostname:port` (resolved at connect time) instead of a literal
+/// address. Reuses the same ephemeral-port + auto-cleanup setup as the others.
+async fn spawn_proxy_with_target(remote: TargetAddr) -> SocketAddr {
+    let listener = TcpListener::bind(LOOPBACK)
+        .await
+        .expect("failed to bind proxy");
+    let addr = listener.local_addr().expect("proxy local_addr");
+    let mut arguments =
+        test_arguments(addr, addr, Some(IO_TIMEOUT.as_secs()), TEST_MAX_CONNECTIONS);
+    arguments.remote_addr = remote;
+    tokio::spawn(run_accept_loop(listener, arguments));
     addr
 }
 
@@ -921,4 +937,116 @@ fn accept_backoff_grows_and_caps() {
         delay, ACCEPT_BACKOFF_MAX,
         "the backoff reaches and holds at the cap"
     );
+}
+
+/// `--remote-addr` accepts either a literal `IP:port` (parsed straight to a socket
+/// address, never resolved) or a `hostname:port` (kept as a name and resolved
+/// lazily at connect time). Malformed values are rejected at parse time without any
+/// DNS lookup, so this test needs no network.
+#[test]
+fn remote_addr_accepts_ip_and_hostname() {
+    use clap::Parser;
+
+    fn parse(remote: &str) -> Result<Arguments, clap::Error> {
+        Arguments::try_parse_from(["logged_tcp_proxy", "-b", "127.0.0.1:0", "-r", remote])
+    }
+
+    // Literal IPv4 and bracketed IPv6 become `Socket` (no DNS involved).
+    assert!(matches!(
+        parse("127.0.0.1:8080")
+            .expect("an IPv4 remote should parse")
+            .remote_addr,
+        TargetAddr::Socket(_)
+    ));
+    assert!(matches!(
+        parse("[::1]:8080")
+            .expect("a bracketed IPv6 remote should parse")
+            .remote_addr,
+        TargetAddr::Socket(_)
+    ));
+
+    // A hostname parses (offline) into `Named`, proving resolution is deferred.
+    match parse("example.com:443")
+        .expect("a hostname remote should parse")
+        .remote_addr
+    {
+        TargetAddr::Named { host, port } => {
+            assert_eq!(host, "example.com");
+            assert_eq!(port, 443);
+        }
+        other => panic!("expected a Named target, got {other:?}"),
+    }
+
+    // Malformed remotes are rejected at parse time (no lookup needed).
+    assert!(parse("example.com").is_err(), "a missing port is rejected");
+    assert!(parse(":443").is_err(), "an empty host is rejected");
+    assert!(
+        parse("example.com:notaport").is_err(),
+        "a non-numeric port is rejected"
+    );
+    assert!(
+        parse("example.com:99999").is_err(),
+        "an out-of-range port is rejected"
+    );
+    assert!(
+        parse("2001:db8::1:9000").is_err(),
+        "an unbracketed IPv6 literal is rejected (use [address]:port)"
+    );
+
+    // Regression guard: a *bracketed* IPv6 with an invalid port must be rejected for
+    // the PORT, not misreported as an unbracketed-IPv6 mistake (the input already has
+    // brackets). Assert the message via `FromStr` directly, since it is the message
+    // that would regress if the host were inspected before the port.
+    for bad in ["[::1]:99999", "[::1]:notaport"] {
+        let err = bad
+            .parse::<TargetAddr>()
+            .expect_err("a bracketed IPv6 with a bad port must be rejected");
+        assert!(
+            err.contains("port"),
+            "`{bad}` should report a port error, got: {err}"
+        );
+        assert!(
+            !err.contains("bracketed"),
+            "`{bad}` is already bracketed, so it must not report the unbracketed-IPv6 error, got: {err}"
+        );
+    }
+}
+
+/// A `hostname:port` remote is resolved via DNS at connect time and relayed like
+/// any other target. The echo server binds via the same name the proxy resolves
+/// (`localhost`) and its assigned port is read back, so the address family always
+/// matches on platforms where `localhost` is IPv6 (e.g. Windows); tokio's connect
+/// also tries every resolved address, so v4/v6 ordering never matters.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn relays_through_a_dns_resolved_hostname() {
+    let listener = TcpListener::bind(("localhost", 0))
+        .await
+        .expect("failed to bind echo server on localhost");
+    let echo_port = listener.local_addr().expect("echo local_addr").port();
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut buffer = [0u8; 4096];
+                loop {
+                    match stream.read(&mut buffer).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(read_length) => {
+                            if stream.write_all(&buffer[0..read_length]).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    });
+
+    let proxy_addr = spawn_proxy_with_target(TargetAddr::Named {
+        host: "localhost".to_string(),
+        port: echo_port,
+    })
+    .await;
+
+    let mut client = connect(proxy_addr).await;
+    assert_round_trip(&mut client, b"resolved through DNS").await;
 }
