@@ -136,15 +136,19 @@ async fn incoming_connection_handle(arguments: Arguments, source_stream: tokio_n
             return;
         }
     };
-    // For a hostname target, report which resolved address was actually reached —
-    // useful when a name has several records or sits behind DNS-based failover.
-    // (A literal `IP:port` target would just repeat itself, so it is left out.)
+    // For a hostname target, report that the connection was established, appending
+    // which resolved address was actually reached when that is available (useful when
+    // a name has several records or sits behind DNS-based failover). The `peer_addr()`
+    // detail is best-effort: the line is always logged, so a rare `peer_addr()` failure
+    // never silently swallows it. (A literal `IP:port` target would just repeat itself,
+    // so it is left out.)
     if let TargetAddr::Named { .. } = &arguments.remote_addr {
-        if let Ok(peer) = destination_stream.peer_addr() {
-            log::info!(
+        match destination_stream.peer_addr() {
+            Ok(peer) => log::info!(
                 "Connected to destination {} ({peer})",
                 arguments.remote_addr
-            );
+            ),
+            Err(_) => log::info!("Connected to destination {}", arguments.remote_addr),
         }
     }
     let (destination_stream_read_half, destination_stream_write_half) =
