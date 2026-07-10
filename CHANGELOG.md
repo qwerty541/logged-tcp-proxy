@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Expanded the README with a purpose-first description, a features list, a runnable quickstart, and a guide to reading the console output (including what the `<` and `>` markers mean). Also documented that the relayed payload is logged at the `debug` level, so raising `--level` above `debug` hides it.
 - Fixed grammar in the user-facing CLI help text and crate description: corrected "binded" to "bound" in the `--bind-listener-addr` help, dropped a stray trailing comma from the `--formatting` help, and reworded the summary line (the `about`/`--help` header, also shown as the crates.io description) for clarity. The README `--help` block and installation prose were updated to match.
+- Reformatted the README Options section from a raw `--help` dump into a scannable table (option, description, default, possible values), which also surfaces the accepted numeric ranges that `--help` does not print (`--timeout` `1..=3153600000`, `--max-connections` `1..`, `--threads` `1..=1024`).
 
 ## v0.2.0 (23.06.2026)
 
