@@ -140,15 +140,15 @@ Below are the supported command-line options. The general form is
 
 | Option | Description | Default | Possible values |
 | --- | --- | --- | --- |
-| `-l, --level <LEVEL>` | Application logging level | `debug` | `trace`, `debug`, `info`, `warn`, `error`, `off` |
-| `-b, --bind-listener-addr <SOCKET_ADDR>` | Address the TCP listener is bound to | _(required)_ | an `IP:port` address |
-| `-r, --remote-addr <SOCKET_ADDR>` | Address of the remote (destination) server | _(required)_ | an `IP:port` address |
-| `-t, --timeout <SECONDS>` | Whole-connection idle timeout: closes the connection once both directions have been idle this long. Omit to wait indefinitely | _(none)_ | `1..=3153600000` |
-| `-m, --max-connections <N>` | Maximum connections handled concurrently; once this many are active, further connections wait for a free slot (backpressure) | `512` | `1..` |
-| `-w, --threads <N>` | Worker threads used by the async runtime | `4` | `1..=1024` |
-| `-f, --formatting <FORMATTING>` | Console payload output format | `lowerhex` | `decimal`, `lowerhex`, `upperhex`, `binary`, `octal` |
-| `-s, --separator <STRING>` | Byte separator in the console payload output | `:` | any string |
-| `-p, --precision <PRECISION>` | Timestamp precision | `seconds` | `seconds`, `milliseconds`, `microseconds`, `nanoseconds` |
+| `-l, --level` | Application logging level | `debug` | `trace`, `debug`, `info`, `warn`, `error`, `off` |
+| `-b, --bind-listener-addr` | Address the TCP listener is bound to | _(required)_ | an `IP:port` address |
+| `-r, --remote-addr` | Address of the remote (destination) server | _(required)_ | an `IP:port` address |
+| `-t, --timeout` | Whole-connection idle timeout: closes the connection once both directions have been idle this long. Omit to wait indefinitely | _(none)_ | `1..=3153600000` |
+| `-m, --max-connections` | Maximum connections handled concurrently; once this many are active, further connections wait for a free slot (backpressure) | `512` | `1..` |
+| `-w, --threads` | Worker threads used by the async runtime | `4` | `1..=1024` |
+| `-f, --formatting` | Console payload output format | `lowerhex` | `decimal`, `lowerhex`, `upperhex`, `binary`, `octal` |
+| `-s, --separator` | Byte separator in the console payload output | `:` | any string |
+| `-p, --precision` | Timestamp precision | `seconds` | `seconds`, `milliseconds`, `microseconds`, `nanoseconds` |
 
 Run `logged_tcp_proxy --help` for the canonical usage output (it also lists `-h, --help` and `-V, --version`).
 
