@@ -65,21 +65,8 @@ def binary_path():
     return path
 
 
-def start_echo_server():
-    """Start an echo server on an ephemeral port. Returns (socket, port)."""
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.bind((HOST, 0))
-    server.listen(8)
-    port = server.getsockname()[1]
-
-    def serve():
-        while True:
-            try:
-                conn, _ = server.accept()
-            except OSError:
-                return  # server socket closed -> stop
-            threading.Thread(target=echo_conn, args=(conn,), daemon=True).start()
+def _serve_echo(server):
+    """Run the accept + echo loop for an already-bound, listening server socket."""
 
     def echo_conn(conn):
         with conn:
@@ -92,7 +79,42 @@ def start_echo_server():
                     return
                 conn.sendall(data)
 
+    def serve():
+        while True:
+            try:
+                conn, _ = server.accept()
+            except OSError:
+                return  # server socket closed -> stop
+            threading.Thread(target=echo_conn, args=(conn,), daemon=True).start()
+
     threading.Thread(target=serve, daemon=True).start()
+
+
+def start_echo_server():
+    """Start an echo server on an ephemeral 127.0.0.1 port. Returns (socket, port)."""
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind((HOST, 0))
+    server.listen(8)
+    port = server.getsockname()[1]
+    _serve_echo(server)
+    return server, port
+
+
+def start_echo_server_on(host):
+    """Start an echo server bound to whatever address family `host` resolves to (via
+    getaddrinfo — the same name the proxy resolves), so the server is actually
+    listening on an address the proxy will reach, even where `host` (e.g. `localhost`)
+    resolves only to IPv6. Returns (socket, port)."""
+    family, socktype, proto, _canon, sockaddr = socket.getaddrinfo(
+        host, 0, type=socket.SOCK_STREAM
+    )[0]
+    server = socket.socket(family, socktype, proto)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(sockaddr)
+    server.listen(8)
+    port = server.getsockname()[1]
+    _serve_echo(server)
     return server, port
 
 
@@ -513,10 +535,11 @@ def test_threads(binary):
 
 def test_hostname_remote(binary):
     """A `hostname:port` remote (not just IP:port) is resolved via DNS and relayed.
-    Uses `localhost`, which resolves to loopback on every platform; the echo server
-    listens on 127.0.0.1 and the proxy's connect tries every resolved address, so it
-    reaches the echo regardless of IPv4/IPv6 ordering."""
-    echo_server, echo_port = start_echo_server()
+    The echo server binds on whatever address family `localhost` resolves to (the same
+    name the proxy resolves), so it is reachable even on hosts where `localhost` is
+    IPv6-only; the proxy also tries every resolved address, so v4/v6 ordering never
+    matters."""
+    echo_server, echo_port = start_echo_server_on("localhost")
     proxy_port = free_port()
     payload = bytes([0x00, 0x11, 0x22, 0x33, 0x44])
     proxy = subprocess.Popen(
