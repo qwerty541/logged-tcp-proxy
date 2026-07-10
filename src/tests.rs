@@ -992,6 +992,24 @@ fn remote_addr_accepts_ip_and_hostname() {
         parse("2001:db8::1:9000").is_err(),
         "an unbracketed IPv6 literal is rejected (use [address]:port)"
     );
+
+    // Regression guard: a *bracketed* IPv6 with an invalid port must be rejected for
+    // the PORT, not misreported as an unbracketed-IPv6 mistake (the input already has
+    // brackets). Assert the message via `FromStr` directly, since it is the message
+    // that would regress if the host were inspected before the port.
+    for bad in ["[::1]:99999", "[::1]:notaport"] {
+        let err = bad
+            .parse::<TargetAddr>()
+            .expect_err("a bracketed IPv6 with a bad port must be rejected");
+        assert!(
+            err.contains("port"),
+            "`{bad}` should report a port error, got: {err}"
+        );
+        assert!(
+            !err.contains("bracketed"),
+            "`{bad}` is already bracketed, so it must not report the unbracketed-IPv6 error, got: {err}"
+        );
+    }
 }
 
 /// A `hostname:port` remote is resolved via DNS at connect time and relayed like

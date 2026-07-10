@@ -156,19 +156,30 @@ impl FromStr for TargetAddr {
             None => Err(format!(
                 "invalid remote address `{s}`: expected `IP:port` or `host:port`"
             )),
-            Some(("", _)) => Err(format!("invalid remote address `{s}`: the host is empty")),
-            Some((host, _)) if host.contains(':') => Err(format!(
-                "invalid remote address `{s}`: an IPv6 address must use the bracketed `[address]:port` form"
-            )),
-            Some((host, port)) => match port.parse::<u16>() {
-                Ok(port) => Ok(TargetAddr::Named {
+            Some((host, port)) => {
+                // Validate the port *before* inspecting the host, so a bracketed IPv6
+                // with a bad port (e.g. `[::1]:99999`) reports the port problem rather
+                // than being misread as an unbracketed-IPv6 mistake. A well-formed
+                // `[ipv6]:port` would already have parsed as a `SocketAddr` above, so
+                // reaching this split with a bracketed host means the port is at fault.
+                let port: u16 = port.parse().map_err(|_| {
+                    format!(
+                        "invalid remote address `{s}`: `{port}` is not a valid port number (0-65535)"
+                    )
+                })?;
+                if host.is_empty() {
+                    return Err(format!("invalid remote address `{s}`: the host is empty"));
+                }
+                if host.contains(':') {
+                    return Err(format!(
+                        "invalid remote address `{s}`: an IPv6 address must use the bracketed `[address]:port` form"
+                    ));
+                }
+                Ok(TargetAddr::Named {
                     host: host.to_string(),
                     port,
-                }),
-                Err(_) => Err(format!(
-                    "invalid remote address `{s}`: `{port}` is not a valid port number (0-65535)"
-                )),
-            },
+                })
+            }
         }
     }
 }
