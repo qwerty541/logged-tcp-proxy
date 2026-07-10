@@ -132,20 +132,22 @@ stop the proxy; it shuts down cleanly and exits with status `0`. See the
 [Example](#example) below for an annotated run and how to read the output.
 
 > [!NOTE] 
-> `--remote-addr` must point at an address where something is already
-> listening. If nothing is there, the proxy logs `Failed to connect to destination ...`,
-> closes that client, and keeps serving other connections — no payload is printed.
+> `--remote-addr` accepts an `IP:port` or a `hostname:port` (a hostname is resolved
+> via DNS each time a connection is opened) and must point at an address where
+> something is already listening. If nothing is there — or the hostname does not
+> resolve — the proxy logs `Failed to connect to destination ...`, closes that client,
+> and keeps serving other connections — no payload is printed.
 
 ## Options
 
 Below are the supported command-line options. The general form is
-`logged_tcp_proxy [OPTIONS] --bind-listener-addr <SOCKET_ADDR> --remote-addr <SOCKET_ADDR>`.
+`logged_tcp_proxy [OPTIONS] --bind-listener-addr <SOCKET_ADDR> --remote-addr <ADDRESS>`.
 
 | Option | Description | Default | Possible values |
 | --- | --- | --- | --- |
 | `-l, --level` | Application logging level | `debug` | `trace`, `debug`, `info`, `warn`, `error`, `off` |
 | `-b, --bind-listener-addr` | Address the TCP listener is bound to | _(required)_ | an `IP:port` address |
-| `-r, --remote-addr` | Address of the remote (destination) server | _(required)_ | an `IP:port` address |
+| `-r, --remote-addr` | Address of the remote (destination) server; a hostname is resolved via DNS each time a connection is opened | _(required)_ | an `IP:port` or `hostname:port` address |
 | `-t, --timeout` | Whole-connection idle timeout: closes the connection once both directions have been idle this long. Omit to wait indefinitely | _(none)_ | `1..=3153600000` |
 | `-m, --max-connections` | Maximum connections handled concurrently; once this many are active, further connections wait for a free slot (backpressure) | `512` | `1..` |
 | `-w, --threads` | Worker threads used by the async runtime | `4` | `1..=1024` |
