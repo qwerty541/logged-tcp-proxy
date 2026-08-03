@@ -1012,6 +1012,94 @@ fn remote_addr_accepts_ip_and_hostname() {
     }
 }
 
+/// A rejected `--remote-addr` must be explained by the *actual* problem. Two
+/// classes of misleading message are guarded here: a value that already uses the
+/// bracketed IPv6 form must never be told to add brackets, and a stray colon that
+/// comes from something else (a pasted URL, an extra `:port`) must not be blamed
+/// on IPv6 either. A genuinely unbracketed IPv6 literal must still get the
+/// bracketing advice, since that is the one case where it is the right fix.
+#[test]
+fn remote_addr_errors_name_the_actual_problem() {
+    fn err(value: &str) -> String {
+        value
+            .parse::<TargetAddr>()
+            .expect_err("value must be rejected")
+    }
+
+    // Already bracketed, but the literal itself is malformed (bad hex group, a
+    // scope/zone id, or simply not an address): blame the address, not the brackets.
+    for value in [
+        "[::g]:80",
+        "[::1x]:80",
+        "[fe80::1%eth0]:80",
+        "[not-an-ip]:80",
+    ] {
+        let message = err(value);
+        assert!(
+            message.contains("not a valid IPv6 address"),
+            "`{value}` should blame the IPv6 literal, got: {message}"
+        );
+        assert!(
+            !message.contains("bracketed"),
+            "`{value}` is already bracketed, so it must not advise bracketing, got: {message}"
+        );
+    }
+
+    // Bracketed, but the port is missing or the bracket is never closed.
+    let message = err("[::1]");
+    assert!(
+        message.contains("the port is missing"),
+        "a bracketed address with no port should report the missing port, got: {message}"
+    );
+    let message = err("[::1:80");
+    assert!(
+        message.contains("never closed"),
+        "an unclosed bracket should be reported as such, got: {message}"
+    );
+
+    // Bracketed with a bad port still blames the port (guards the original fix).
+    for value in ["[::1]:99999", "[::1]:notaport", "[::1]:80:90"] {
+        let message = err(value);
+        assert!(
+            message.contains("not a valid port number"),
+            "`{value}` should blame the port, got: {message}"
+        );
+        assert!(
+            !message.contains("bracketed"),
+            "`{value}` must not advise bracketing, got: {message}"
+        );
+    }
+
+    // A pasted URL is called out as a URL, not as an IPv6 mistake.
+    for value in ["http://example.com:443", "tcp://1.2.3.4:80"] {
+        let message = err(value);
+        assert!(
+            message.contains("not a URL"),
+            "`{value}` should be reported as a URL, got: {message}"
+        );
+        assert!(
+            !message.contains("bracketed"),
+            "`{value}` must not advise IPv6 bracketing, got: {message}"
+        );
+    }
+
+    // A stray extra colon that is not IPv6 gets a neutral message.
+    let message = err("host:80:90");
+    assert!(
+        !message.contains("bracketed"),
+        "`host:80:90` must not advise IPv6 bracketing, got: {message}"
+    );
+
+    // A genuinely unbracketed IPv6 literal still gets the bracketing advice.
+    for value in ["2001:db8::1:9000", "::1", "fe80::1"] {
+        let message = err(value);
+        assert!(
+            message.contains("bracketed `[address]:port`"),
+            "`{value}` should advise the bracketed form, got: {message}"
+        );
+    }
+}
+
 /// A `hostname:port` remote is resolved via DNS at connect time and relayed like
 /// any other target. The echo server binds via the same name the proxy resolves
 /// (`localhost`) and its assigned port is read back, so the address family always

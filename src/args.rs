@@ -139,6 +139,17 @@ pub enum TargetAddr {
     Named { host: String, port: u16 },
 }
 
+/// Heuristic for "the user typed a bare, unbracketed IPv6 literal", used only to
+/// pick the most helpful error message. An IPv6 address always has at least two
+/// colons and consists solely of hex digits, colons and dots (the last for
+/// IPv4-mapped forms such as `::ffff:1.2.3.4`), so anything else carrying a stray
+/// colon is a different mistake and must not be blamed on IPv6.
+fn looks_like_unbracketed_ipv6(s: &str) -> bool {
+    s.matches(':').count() >= 2
+        && s.chars()
+            .all(|c| c.is_ascii_hexdigit() || c == ':' || c == '.')
+}
+
 impl FromStr for TargetAddr {
     type Err = String;
 
@@ -149,6 +160,40 @@ impl FromStr for TargetAddr {
         if let Ok(addr) = s.parse::<net::SocketAddr>() {
             return Ok(TargetAddr::Socket(addr));
         }
+        // A pasted URL is one of the likelier mistakes for a proxy target, so name
+        // it rather than letting the scheme's colon fall through to the checks below.
+        if s.contains("://") {
+            return Err(format!(
+                "invalid remote address `{s}`: expected `IP:port` or `host:port`, not a URL"
+            ));
+        }
+        // A leading `[` is an attempt at the bracketed IPv6 form. A well-formed
+        // `[address]:port` would already have parsed as a `SocketAddr` above, so
+        // everything reaching here is malformed in some way: report what is actually
+        // wrong instead of advising brackets the value already uses.
+        if let Some(rest) = s.strip_prefix('[') {
+            let Some((literal, port)) = rest.split_once("]:") else {
+                return Err(if rest.ends_with(']') {
+                    format!(
+                        "invalid remote address `{s}`: the port is missing, expected `[address]:port`"
+                    )
+                } else {
+                    format!(
+                        "invalid remote address `{s}`: the `[` is never closed, expected `[address]:port`"
+                    )
+                });
+            };
+            // Check the port first, so `[::1]:99999` blames the port rather than the
+            // address (the address is fine there).
+            if port.parse::<u16>().is_err() {
+                return Err(format!(
+                    "invalid remote address `{s}`: `{port}` is not a valid port number (0-65535)"
+                ));
+            }
+            return Err(format!(
+                "invalid remote address `{s}`: `{literal}` is not a valid IPv6 address"
+            ));
+        }
         // Otherwise treat it as `host:port`, splitting on the last colon (a
         // hostname never contains one). Only the *shape* is validated here; the
         // DNS lookup is deferred to connect time.
@@ -157,11 +202,6 @@ impl FromStr for TargetAddr {
                 "invalid remote address `{s}`: expected `IP:port` or `host:port`"
             )),
             Some((host, port)) => {
-                // Validate the port *before* inspecting the host, so a bracketed IPv6
-                // with a bad port (e.g. `[::1]:99999`) reports the port problem rather
-                // than being misread as an unbracketed-IPv6 mistake. A well-formed
-                // `[ipv6]:port` would already have parsed as a `SocketAddr` above, so
-                // reaching this split with a bracketed host means the port is at fault.
                 let port: u16 = port.parse().map_err(|_| {
                     format!(
                         "invalid remote address `{s}`: `{port}` is not a valid port number (0-65535)"
@@ -171,9 +211,17 @@ impl FromStr for TargetAddr {
                     return Err(format!("invalid remote address `{s}`: the host is empty"));
                 }
                 if host.contains(':') {
-                    return Err(format!(
-                        "invalid remote address `{s}`: an IPv6 address must use the bracketed `[address]:port` form"
-                    ));
+                    // Advise bracketing only when the value really looks like an IPv6
+                    // literal; any other stray colon is a different mistake.
+                    return Err(if looks_like_unbracketed_ipv6(s) {
+                        format!(
+                            "invalid remote address `{s}`: an IPv6 address must use the bracketed `[address]:port` form"
+                        )
+                    } else {
+                        format!(
+                            "invalid remote address `{s}`: the host must not contain `:`, expected `IP:port` or `host:port`"
+                        )
+                    });
                 }
                 Ok(TargetAddr::Named {
                     host: host.to_string(),
