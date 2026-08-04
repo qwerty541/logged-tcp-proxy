@@ -15,6 +15,8 @@ use crate::args::TimestampPrecision;
 use crate::conn::initialize_tcp_listener;
 use crate::conn::run_accept_loop;
 use std::net::SocketAddr;
+use std::sync::Mutex;
+use std::sync::Once;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
@@ -92,6 +94,42 @@ async fn spawn_echo_server() -> SocketAddr {
     });
 
     addr
+}
+
+/// Spawn an echo server bound via the *name* `localhost`, rather than the literal
+/// `127.0.0.1` the other helpers use, and return its port. Binding through the same
+/// name the proxy resolves keeps the address family in sync on platforms where
+/// `localhost` is IPv6 (e.g. Windows), and the proxy's connect tries every resolved
+/// address anyway, so v4/v6 ordering never matters. Used by the tests that need a
+/// remote reachable *by name*.
+async fn spawn_localhost_echo_server() -> u16 {
+    let listener = TcpListener::bind(("localhost", 0))
+        .await
+        .expect("failed to bind echo server on localhost");
+    let port = listener
+        .local_addr()
+        .expect("echo server local_addr")
+        .port();
+
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut buffer = [0u8; 4096];
+                loop {
+                    match stream.read(&mut buffer).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(read_length) => {
+                            if stream.write_all(&buffer[0..read_length]).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    });
+
+    port
 }
 
 /// Bind a proxy listener on an ephemeral loopback port and start its accept loop
@@ -1107,27 +1145,7 @@ fn remote_addr_errors_name_the_actual_problem() {
 /// also tries every resolved address, so v4/v6 ordering never matters.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn relays_through_a_dns_resolved_hostname() {
-    let listener = TcpListener::bind(("localhost", 0))
-        .await
-        .expect("failed to bind echo server on localhost");
-    let echo_port = listener.local_addr().expect("echo local_addr").port();
-    tokio::spawn(async move {
-        while let Ok((mut stream, _)) = listener.accept().await {
-            tokio::spawn(async move {
-                let mut buffer = [0u8; 4096];
-                loop {
-                    match stream.read(&mut buffer).await {
-                        Ok(0) | Err(_) => break,
-                        Ok(read_length) => {
-                            if stream.write_all(&buffer[0..read_length]).await.is_err() {
-                                break;
-                            }
-                        }
-                    }
-                }
-            });
-        }
-    });
+    let echo_port = spawn_localhost_echo_server().await;
 
     let proxy_addr = spawn_proxy_with_target(TargetAddr::Named {
         host: "localhost".to_string(),
@@ -1137,4 +1155,95 @@ async fn relays_through_a_dns_resolved_hostname() {
 
     let mut client = connect(proxy_addr).await;
     assert_round_trip(&mut client, b"resolved through DNS").await;
+}
+
+/// Every message the proxy logs, captured so a test can assert on what was — and
+/// was not — logged. Tests share one process and run in parallel, so assertions
+/// must key off their own unique ephemeral addresses rather than the contents or
+/// length of this buffer as a whole.
+static CAPTURED_LOGS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+struct CapturingLogger;
+
+impl log::Log for CapturingLogger {
+    fn enabled(&self, _metadata: &log::Metadata) -> bool {
+        true
+    }
+
+    fn log(&self, record: &log::Record) {
+        CAPTURED_LOGS
+            .lock()
+            .expect("captured logs mutex poisoned")
+            .push(record.args().to_string());
+    }
+
+    fn flush(&self) {}
+}
+
+/// Install [`CapturingLogger`] the first time a test needs it (a process may only
+/// ever set one logger). `Info` keeps the payload `debug` records out of the
+/// capture; the lifecycle lines under test are logged at `info`.
+fn install_capturing_logger() {
+    static INSTALL: Once = Once::new();
+    INSTALL.call_once(|| {
+        log::set_boxed_logger(Box::new(CapturingLogger))
+            .expect("failed to install the test logger");
+        log::set_max_level(log::LevelFilter::Info);
+    });
+}
+
+/// The `<target>` field of every captured `Connected to destination <target> ...`
+/// line. Returned for exact-equality comparison, so one test's ephemeral port can
+/// never match another's merely by being a prefix of it (`:4523` vs `:45231`).
+fn logged_destinations() -> Vec<String> {
+    CAPTURED_LOGS
+        .lock()
+        .expect("captured logs mutex poisoned")
+        .iter()
+        .filter_map(|line| line.strip_prefix("Connected to destination "))
+        .filter_map(|rest| rest.split_whitespace().next())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Only a *hostname* target reports the destination it reached. A literal `IP:port`
+/// remote must stay silent, since `Connected to destination 127.0.0.1:x
+/// (127.0.0.1:x)` would merely repeat itself — the `TargetAddr::Named` guard in
+/// `incoming_connection_handle` is the only thing enforcing that, and nothing else
+/// in either test layer would notice if it were removed.
+///
+/// Both halves are asserted in one test on purpose: the "must not log" half would
+/// pass vacuously if the capture were broken, so it is paired with a "must log"
+/// half that fails first in that case.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn only_a_hostname_remote_logs_the_resolved_destination() {
+    install_capturing_logger();
+
+    // A literal `IP:port` remote — the `TargetAddr::Socket` variant.
+    let echo_addr = spawn_echo_server().await;
+    let literal_proxy_addr = spawn_proxy(echo_addr).await;
+    let mut literal_client = connect(literal_proxy_addr).await;
+    assert_round_trip(&mut literal_client, b"literal address").await;
+
+    // A `hostname:port` remote — the `TargetAddr::Named` variant.
+    let named_port = spawn_localhost_echo_server().await;
+    let named_proxy_addr = spawn_proxy_with_target(TargetAddr::Named {
+        host: "localhost".to_string(),
+        port: named_port,
+    })
+    .await;
+    let mut named_client = connect(named_proxy_addr).await;
+    assert_round_trip(&mut named_client, b"resolved name").await;
+
+    // Both round trips completed, so each connection had already reached its
+    // destination and logged whatever it was going to log.
+    let destinations = logged_destinations();
+    assert!(
+        destinations.contains(&format!("localhost:{named_port}")),
+        "a hostname remote must report the destination it reached; captured: {destinations:?}"
+    );
+    assert!(
+        !destinations.contains(&echo_addr.to_string()),
+        "a literal IP remote must not log a redundant destination line; captured: {destinations:?}"
+    );
 }
