@@ -48,8 +48,8 @@ All source lives in `src/`:
   their historical no-separator spellings (without them, clap would expect
   `lower-hex` / `upper-hex` and reject the `default_value = "lowerhex"`). The
   `value_enum_names_match_documented_cli_values` test in
-  [`src/tests.rs`](src/tests.rs) pins every enum's value names so a casing change
-  can't silently regress them. Each enum then converts into its downstream type:
+  [`src/tests/cli_args.rs`](src/tests/cli_args.rs) pins every enum's value names so
+  a casing change can't silently regress them. Each enum then converts into its downstream type:
   - `LoggingLevel` → converts into `log::LevelFilter`.
   - `PayloadFormattingKind` → selects a `logged_stream` formatter via
     `get_formatter_by_kind`.
@@ -92,9 +92,16 @@ All source lives in `src/`:
     timeout: a lock-free clock both directions bump on activity, plus a watchdog
     that tears the connection down once both directions have been silent for
     `--timeout`.
-- [`src/tests.rs`](src/tests.rs) — in-crate integration tests, compiled only
-  under `#[cfg(test)]` (declared as `mod tests;` from `main.rs`). See
-  [Testing](#testing).
+- [`src/tests.rs`](src/tests.rs) + [`src/tests/`](src/tests) — in-crate
+  integration tests, compiled only under `#[cfg(test)]`. `tests.rs` is just the
+  module root (a doc header plus the `mod` declarations); the tests themselves live
+  in submodules grouped by the behavior they cover — `relay`, `teardown`, `errors`,
+  `real_protocols`, `idle_timeout`, `accept_loop`, `hostname` and `cli_args` —
+  alongside two scaffolding-only modules, `helpers` (the shared constants, echo
+  servers, proxy spawners and client assertions) and `log_capture` (the capturing
+  `log` sink used to assert on what the proxy logged). Because `mod tests;` in
+  `main.rs` is already gated, the submodules need no `#[cfg(test)]` of their own.
+  See [Testing](#testing).
 - [`scripts/integration_test.py`](scripts/integration_test.py) — a black-box
   integration test that drives the **compiled binary** end to end (lives outside
   `src/` and is not part of the published crate). See [Testing](#testing).
@@ -220,8 +227,10 @@ change**, also do the following — this is the default expectation and does not
 need to be requested each time:
 
 - **Tests** — add or update coverage so the new behavior is exercised and
-  regressions are caught: the in-crate tests in [`src/tests.rs`](src/tests.rs)
-  and/or the black-box [`scripts/integration_test.py`](scripts/integration_test.py).
+  regressions are caught: the in-crate tests in [`src/tests/`](src/tests) (add the
+  test to the submodule matching its behavior, and any new shared helper to
+  `helpers`) and/or the black-box
+  [`scripts/integration_test.py`](scripts/integration_test.py).
 - **Docs** — update this `CLAUDE.md` and [`README.md`](README.md) wherever they
   describe what changed (behavior, CLI options, architecture). Also keep
   [`CONTRIBUTING.md`](CONTRIBUTING.md) in sync when a change touches what it
@@ -239,12 +248,35 @@ There are two layers of tests, both runnable locally and in CI.
 
 ### In-crate tests (`cargo test`)
 
-Integration tests live **inside the crate** in [`src/tests.rs`](src/tests.rs)
-under `#[cfg(test)]`, rather than in a top-level `tests/` directory. This is a
+Integration tests live **inside the crate** in the [`src/tests/`](src/tests) module
+tree under `#[cfg(test)]`, rather than in a top-level `tests/` directory. This is a
 deliberate choice: a `tests/` directory can only exercise a crate's public
 **library** API, which would require adding a `lib` target and publishing a
 library surface on docs.rs. Keeping the tests in-crate lets them call internal
 (`pub(crate)`) functions directly while the package stays binary-only.
+
+The suite is grouped into submodules by behavior ([`relay`](src/tests/relay.rs),
+[`teardown`](src/tests/teardown.rs), [`errors`](src/tests/errors.rs),
+[`real_protocols`](src/tests/real_protocols.rs),
+[`idle_timeout`](src/tests/idle_timeout.rs),
+[`accept_loop`](src/tests/accept_loop.rs), [`hostname`](src/tests/hostname.rs),
+[`cli_args`](src/tests/cli_args.rs)), plus two scaffolding-only modules:
+[`helpers`](src/tests/helpers.rs) and [`log_capture`](src/tests/log_capture.rs).
+Conventions that keep the tree tidy:
+
+- Add a test to the submodule matching the behavior it covers; keep items only that
+  submodule uses local to it (the MODBUS `Service`, the `RESPONSE`/`BODY` consts).
+- Anything shared across submodules goes in `helpers` (or `log_capture`) and is
+  exported `pub(super)`. Helpers used by only one file stay private — an unused
+  `pub(super)` item is a `dead_code` error under `-D warnings`, which is the
+  mechanism that flags an orphaned helper, so don't silence it with `allow`.
+- Submodules take no `#[cfg(test)]`; the single gate on `mod tests;` in `main.rs`
+  covers the whole tree. Never name a submodule `tests` (`clippy::module_inception`).
+- Tests are reported with their module path (`tests::relay::relays_payload_through_remote`),
+  so `cargo test tests::relay` runs one group.
+- `cargo test` runs the whole tree in **one process** with tests in parallel, so any
+  assertion on captured log output must key off that test's own unique ephemeral
+  address rather than the contents of the shared buffer.
 
 They are fully self-contained and portable:
 

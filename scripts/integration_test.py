@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Black-box integration test for the ``logged_tcp_proxy`` binary.
 
-Unlike the in-crate tests in ``src/tests.rs`` (which call the relay functions
+Unlike the in-crate tests in ``src/tests/`` (which call the relay functions
 directly), this script exercises the *real compiled binary* end to end:
 
   * it starts a tiny echo server,
