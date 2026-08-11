@@ -15,6 +15,7 @@
 mod accept_loop;
 mod cli_args;
 mod errors;
+mod formatting;
 mod helpers;
 mod hostname;
 mod idle_timeout;

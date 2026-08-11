@@ -96,7 +96,8 @@ All source lives in `src/`:
   integration tests, compiled only under `#[cfg(test)]`. `tests.rs` is just the
   module root (a doc header plus the `mod` declarations); the tests themselves live
   in submodules grouped by the behavior they cover — `relay`, `teardown`, `errors`,
-  `real_protocols`, `idle_timeout`, `accept_loop`, `hostname` and `cli_args` —
+  `real_protocols`, `idle_timeout`, `accept_loop`, `hostname`, `cli_args` and
+  `formatting` —
   alongside two scaffolding-only modules, `helpers` (the shared constants, echo
   servers, proxy spawners and client assertions) and `log_capture` (the capturing
   `log` sink used to assert on what the proxy logged). Because `mod tests;` in
@@ -260,7 +261,10 @@ The suite is grouped into submodules by behavior ([`relay`](src/tests/relay.rs),
 [`real_protocols`](src/tests/real_protocols.rs),
 [`idle_timeout`](src/tests/idle_timeout.rs),
 [`accept_loop`](src/tests/accept_loop.rs), [`hostname`](src/tests/hostname.rs),
-[`cli_args`](src/tests/cli_args.rs)), plus two scaffolding-only modules:
+[`cli_args`](src/tests/cli_args.rs),
+[`formatting`](src/tests/formatting.rs) — the only module with no I/O at all: it
+pins what each `--formatting` mode renders and where `--separator` is placed),
+plus two scaffolding-only modules:
 [`helpers`](src/tests/helpers.rs) and [`log_capture`](src/tests/log_capture.rs).
 Conventions that keep the tree tidy:
 
@@ -306,8 +310,17 @@ an echo server, runs the proxy binary between a client and that echo server, and
 covers several cases:
 
 - **relay + logging** — bytes are relayed both ways **and** the proxy prints the
-  payload to the console in the requested format (checked for `lowerhex` and
-  `upperhex`).
+  payload to the console in the requested format. One case per `--formatting`
+  value (`lowerhex`, `upperhex`, `decimal`, `octal`, `binary`), since printing the
+  payload is the whole point of the tool.
+- **direction markers + no double logging** — against a remote whose reply differs
+  from the request (an echo server cannot distinguish the directions), `<` marks
+  the client's bytes and `>` the remote's, the markers are not swapped, and each
+  payload is logged **exactly once** — pinning the deliberate `RecordKindFilter`
+  on the destination stream that stops every byte being printed twice.
+- **level filtering** — the payload appears at `--level debug` and is suppressed at
+  `--level info`, while the `INFO` lifecycle lines still print (so the absence
+  cannot pass vacuously).
 - **real HTTP** — a real request/response (stdlib `http.server` + `urllib`) is
   relayed through the proxy.
 - **real MODBUS** — a real MODBUS TCP read-holding-registers exchange (frames
