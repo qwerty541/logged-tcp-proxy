@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Black-box integration test for the ``logged_tcp_proxy`` binary.
 
-Unlike the in-crate tests in ``src/tests.rs`` (which call the relay functions
+Unlike the in-crate tests in ``src/tests/`` (which call the relay functions
 directly), this script exercises the *real compiled binary* end to end:
 
   * it starts a tiny echo server,
@@ -231,6 +231,138 @@ def run_case(binary, formatting, separator, render_byte):
         fail("[%s] payload not logged as %r" % (formatting, expected))
 
     print("OK [%s] relayed %d bytes and logged them as %s" % (formatting, len(payload), expected))
+
+
+def start_asymmetric_server(reply):
+    """Start a server that answers every connection with `reply`, whatever it was
+    sent. Unlike the echo server the two directions carry DIFFERENT bytes, which is
+    what makes it possible to tell which direction a logged line belongs to.
+    Returns (socket, port)."""
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind((HOST, 0))
+    server.listen(8)
+    port = server.getsockname()[1]
+
+    def handle(conn):
+        with conn:
+            try:
+                if conn.recv(4096):
+                    conn.sendall(reply)
+            except OSError:
+                return
+
+    def serve():
+        while True:
+            try:
+                conn, _ = server.accept()
+            except OSError:
+                return
+            threading.Thread(target=handle, args=(conn,), daemon=True).start()
+
+    threading.Thread(target=serve, daemon=True).start()
+    return server, port
+
+
+def test_direction_markers_and_no_double_logging(binary):
+    """Each direction is marked correctly and logged exactly once.
+
+    `<` marks bytes read from the client, `>` marks bytes written back to it. Both
+    directions are logged on the SOURCE stream; the destination stream deliberately
+    uses a RecordKindFilter so the same bytes are not printed a second time. An echo
+    server cannot check any of this — with identical bytes both ways, swapped markers
+    and doubled lines both look correct — so this case uses a remote whose reply
+    differs from the request."""
+    request = bytes([0x11, 0x22, 0x33])
+    reply = bytes([0xAA, 0xBB, 0xCC])
+    request_hex = ":".join("%02x" % b for b in request)
+    reply_hex = ":".join("%02x" % b for b in reply)
+
+    remote, remote_port = start_asymmetric_server(reply)
+    proxy, proxy_port = start_proxy(binary, remote_port)
+    try:
+        if not wait_for_listener(proxy_port):
+            fail("[markers] proxy did not start listening")
+        with socket.create_connection((HOST, proxy_port), timeout=IO_TIMEOUT) as client:
+            client.settimeout(IO_TIMEOUT)
+            client.sendall(request)
+            received = recv_exact(client, len(reply))
+        if received != reply:
+            fail("[markers] expected the remote's reply %r, got %r" % (reply, received))
+        time.sleep(0.3)  # let the proxy flush its log lines
+    finally:
+        output = stop_proxy(proxy)
+        remote.close()
+
+    lines = output.splitlines()
+    sent_out = [l for l in lines if ("< " + request_hex) in l]
+    reply_in = [l for l in lines if ("> " + reply_hex) in l]
+
+    # Direction: the client's bytes are `<`, the remote's reply is `>`.
+    if len(sent_out) != 1 or len(reply_in) != 1:
+        print("---- proxy output ----\n" + output + "----------------------")
+        fail("[markers] expected exactly one `< %s` and one `> %s` line, got %d and %d"
+             % (request_hex, reply_hex, len(sent_out), len(reply_in)))
+
+    # Markers must not be swapped.
+    if ("> " + request_hex) in output or ("< " + reply_hex) in output:
+        print("---- proxy output ----\n" + output + "----------------------")
+        fail("[markers] direction markers are swapped")
+
+    # De-duplication: neither payload may appear more than once anywhere in the
+    # output, which is what the destination stream's RecordKindFilter guarantees.
+    for label, payload_hex in (("request", request_hex), ("reply", reply_hex)):
+        occurrences = output.count(payload_hex)
+        if occurrences != 1:
+            print("---- proxy output ----\n" + output + "----------------------")
+            fail("[markers] the %s payload was logged %d times, expected exactly once"
+                 % (label, occurrences))
+
+    print("OK [markers] `<`/`>` mark the right direction and each payload is logged once")
+
+
+def test_level_filters_payload(binary):
+    """`--level` controls whether the payload is printed at all.
+
+    The payload is logged at `debug`, so it must appear at `--level debug` (the
+    default) and be suppressed at `--level info` — while the `INFO` lifecycle lines
+    still show, proving the relay really ran and the absence is not vacuous."""
+    payload = bytes([0xDE, 0xAD, 0xBE, 0xEF])
+    payload_hex = ":".join("%02x" % b for b in payload)
+
+    def relay_at(level):
+        echo_server, echo_port = start_echo_server()
+        proxy, proxy_port = start_proxy(binary, echo_port, level=level)
+        try:
+            if not wait_for_listener(proxy_port):
+                fail("[level] proxy did not start listening at --level %s" % level)
+            with socket.create_connection((HOST, proxy_port), timeout=IO_TIMEOUT) as client:
+                client.settimeout(IO_TIMEOUT)
+                client.sendall(payload)
+                received = recv_exact(client, len(payload))
+            if received != payload:
+                fail("[level] relay failed at --level %s: got %r" % (level, received))
+            time.sleep(0.3)
+        finally:
+            output = stop_proxy(proxy)
+            echo_server.close()
+        return output
+
+    debug_output = relay_at("debug")
+    if payload_hex not in debug_output:
+        print("---- proxy output ----\n" + debug_output + "----------------------")
+        fail("[level] the payload must be printed at --level debug")
+
+    info_output = relay_at("info")
+    if payload_hex in info_output:
+        print("---- proxy output ----\n" + info_output + "----------------------")
+        fail("[level] the payload must be hidden at --level info")
+    # The relay still ran, so the lifecycle lines prove the absence above is real.
+    if "Listener bound to" not in info_output:
+        print("---- proxy output ----\n" + info_output + "----------------------")
+        fail("[level] --level info should still print the INFO lifecycle lines")
+
+    print("OK [level] payload shown at debug, hidden at info (lifecycle lines kept)")
 
 
 def test_unreachable_remote(binary):
@@ -631,8 +763,16 @@ def test_unresolvable_remote(binary):
 def main():
     binary = binary_path()
     print("testing binary: " + binary)
+    # One case per `--formatting` value: printing the payload in the requested
+    # notation is the whole point of the tool, so every mode is exercised against
+    # the real binary (the in-crate `tests::formatting` module pins the renderings).
     run_case(binary, "lowerhex", ":", lambda b: "%02x" % b)
     run_case(binary, "upperhex", "-", lambda b: "%02X" % b)
+    run_case(binary, "decimal", ":", lambda b: "%d" % b)
+    run_case(binary, "octal", ":", lambda b: "%03o" % b)
+    run_case(binary, "binary", ":", lambda b: format(b, "08b"))
+    test_direction_markers_and_no_double_logging(binary)
+    test_level_filters_payload(binary)
     test_hostname_remote(binary)
     test_http(binary)
     test_modbus(binary)
