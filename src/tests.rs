@@ -10,7 +10,7 @@
 //! The suite is split across submodules by the behavior they cover; `helpers`
 //! and `log_capture` hold the scaffolding they share. The whole tree is compiled
 //! only under `#[cfg(test)]`, via the gated `mod tests;` declaration in
-//! [`main.rs`](../main.rs), so the submodules need no `cfg` attribute of their own.
+//! [`main.rs`](main.rs), so the submodules need no `cfg` attribute of their own.
 
 mod accept_loop;
 mod cli_args;
