@@ -150,6 +150,58 @@ jobs:
           python="$(command -v python3 || command -v python)"
           "$python" scripts/integration_test.py
 
+  coverage:
+    name: Test coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # `llvm-tools` supplies llvm-profdata/llvm-cov, which turn the counters that
+      # `-C instrument-coverage` embeds into a report. Stable is enough: the flag
+      # has been stable since Rust 1.60.
+      - name: Install rust (stable)
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          components: llvm-tools-preview
+          toolchain: stable
+
+      # Prebuilt binary, so the runner downloads rather than compiles it.
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@6a1bd70eaac3c8bdf093356838d7ee09fda951cf # v2.85.5
+        with:
+          tool: cargo-llvm-cov
+
+      # Deliberately not cached: a coverage build uses different RUSTFLAGS, so its
+      # artifacts are incompatible with the cache `build_and_test` writes.
+      #
+      # `--ignore-filename-regex 'src/tests'` is NOT optional. The tests live
+      # in-crate under `#[cfg(test)]`, so they are instrumented alongside the real
+      # code; at ~1370 lines against ~670 lines of source they would dominate the
+      # result while being covered tautologically.
+      #
+      # This measures the in-crate tests only, so `main()` — which nothing but the
+      # black-box script exercises — counts as uncovered. Reported, never gated:
+      # there is no `--fail-under`, so this job fails only if the tests themselves do.
+      - name: Measure coverage
+        shell: bash
+        run: |
+          cargo llvm-cov --summary-only --ignore-filename-regex 'src/tests' \
+            | tee coverage.txt
+          {
+            echo '### Test coverage'
+            echo
+            echo 'In-crate tests (`cargo test`), excluding the test code itself.'
+            echo '`main()` is not exercised by these tests, only by'
+            echo '`scripts/integration_test.py`, so `src/main.rs` reads low here.'
+            echo
+            echo '```'
+            cat coverage.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   msrv:
     name: Check minimal supported rust version (MSRV).
     runs-on: ubuntu-latest

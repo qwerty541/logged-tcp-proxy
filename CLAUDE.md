@@ -354,6 +354,13 @@ job.
 - **integration** — builds the binary and runs the black-box
   [`scripts/integration_test.py`](scripts/integration_test.py) on
   ubuntu/macos/windows (the Ctrl-C case is skipped on Windows).
+- **coverage** — `cargo llvm-cov` (source-based LLVM coverage, stable toolchain +
+  the `llvm-tools` component) on ubuntu, printing a per-file summary to the job
+  summary. It always passes `--ignore-filename-regex 'src/tests'`: the tests are
+  in-crate, so they get instrumented alongside the real code and would otherwise
+  dominate the result while being covered tautologically. It measures the in-crate
+  tests only, so `main()` — reached only by the black-box script — counts as
+  uncovered. Reported, never gated (no `--fail-under`).
 - **msrv** — `cargo msrv find` to verify the minimal supported Rust version.
 
 Other workflows are housekeeping: `labeler.yml` (PR labels) and
