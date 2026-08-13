@@ -174,8 +174,21 @@ jobs:
         with:
           tool: cargo-llvm-cov
 
-      # Deliberately not cached: a coverage build uses different RUSTFLAGS, so its
-      # artifacts are incompatible with the cache `build_and_test` writes.
+      # Deliberately not cached. Restoring the `ubuntu-stable-` entry that
+      # `build_and_test` writes was considered and rejected, for three reasons:
+      #   * cargo-llvm-cov builds into `target/llvm-cov-target`, not `target/debug`
+      #     ("If we change RUSTFLAGS, all dependencies will be recompiled. Therefore,
+      #     use a subdirectory of the target directory" — cargo-llvm-cov src/cargo.rs),
+      #     so those cached artifacts would never be consulted; cargo also hashes
+      #     RUSTFLAGS into the artifact name, so they could not be reused anyway.
+      #   * `actions/cache` hashes the `path:` list into the cache version, so a
+      #     restore asking for only `~/.cargo` never matches an entry saved as
+      #     `[~/.cargo, target]`. It does not error — it just misses, so it would
+      #     read as configured while doing nothing.
+      #   * Restoring the whole entry means fetching ~300 MB of unusable `target` to
+      #     save a few seconds of `cargo fetch`. This job is not the critical path
+      #     (it runs concurrently with the 9-cell `build_and_test` matrix and with
+      #     `msrv`, both of which finish later), so the net saving is zero.
       #
       # `--ignore-filename-regex 'src/tests'` is NOT optional. The tests live
       # in-crate under `#[cfg(test)]`, so they are instrumented alongside the real
