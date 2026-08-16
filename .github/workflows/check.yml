@@ -155,6 +155,25 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
+    # Both settings only make the build cheaper; neither can move the reported
+    # percentages.
+    #   * `CARGO_INCREMENTAL` — incremental compilation applies to workspace members
+    #     only (never to registry dependencies), so here it covers exactly one rustc
+    #     invocation. This job caches nothing by design, so that incremental cache is
+    #     written, never read, then discarded with the runner. Turning it off also
+    #     drops the unit from 256 codegen units back to 16, which keeps the
+    #     instrumented binary's layout stable between runs.
+    #   * `CARGO_PROFILE_DEV_DEBUG` — the env-var spelling of `[profile.dev] debug`.
+    #     Source-based coverage reads the `__llvm_covmap` / `__llvm_covfun` sections,
+    #     which carry their own filename tables and line/column ranges; they are
+    #     emitted byte-for-byte identically with and without DWARF. Dropping debug
+    #     info therefore only shrinks the build (~15% faster, ~200 MiB less disk).
+    #     The trade-off is that a failure *in this job* prints backtraces without
+    #     file:line for crate frames — `build_and_test` is where tests are debugged.
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
