@@ -150,6 +150,90 @@ jobs:
           python="$(command -v python3 || command -v python)"
           "$python" scripts/integration_test.py
 
+  coverage:
+    name: Test coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # Both settings only make the build cheaper; neither can move the reported
+    # percentages.
+    #   * `CARGO_INCREMENTAL` — incremental compilation applies to workspace members
+    #     only (never to registry dependencies), so here it covers exactly one rustc
+    #     invocation. This job caches nothing by design, so that incremental cache is
+    #     written, never read, then discarded with the runner. Turning it off also
+    #     drops the unit from 256 codegen units back to 16, which keeps the
+    #     instrumented binary's layout stable between runs.
+    #   * `CARGO_PROFILE_DEV_DEBUG` — the env-var spelling of `[profile.dev] debug`.
+    #     Source-based coverage reads the `__llvm_covmap` / `__llvm_covfun` sections,
+    #     which carry their own filename tables and line/column ranges; they are
+    #     emitted byte-for-byte identically with and without DWARF. Dropping debug
+    #     info therefore only shrinks the build (~15% faster, ~200 MiB less disk).
+    #     The trade-off is that a failure *in this job* prints backtraces without
+    #     file:line for crate frames — `build_and_test` is where tests are debugged.
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # `llvm-tools` supplies llvm-profdata/llvm-cov, which turn the counters that
+      # `-C instrument-coverage` embeds into a report. Stable is enough: the flag
+      # has been stable since Rust 1.60.
+      - name: Install rust (stable)
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          components: llvm-tools-preview
+          toolchain: stable
+
+      # Prebuilt binary, so the runner downloads rather than compiles it.
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10
+        with:
+          tool: cargo-llvm-cov
+
+      # Deliberately not cached. Restoring the `ubuntu-stable-` entry that
+      # `build_and_test` writes was considered and rejected, for three reasons:
+      #   * cargo-llvm-cov builds into `target/llvm-cov-target`, not `target/debug`
+      #     ("If we change RUSTFLAGS, all dependencies will be recompiled. Therefore,
+      #     use a subdirectory of the target directory" — cargo-llvm-cov src/cargo.rs),
+      #     so those cached artifacts would never be consulted; cargo also hashes
+      #     RUSTFLAGS into the artifact name, so they could not be reused anyway.
+      #   * `actions/cache` hashes the `path:` list into the cache version, so a
+      #     restore asking for only `~/.cargo` never matches an entry saved as
+      #     `[~/.cargo, target]`. It does not error — it just misses, so it would
+      #     read as configured while doing nothing.
+      #   * Restoring the whole entry means fetching ~300 MB of unusable `target` to
+      #     save a few seconds of `cargo fetch`. This job is not the critical path
+      #     (it runs concurrently with the 9-cell `build_and_test` matrix and with
+      #     `msrv`, both of which finish later), so the net saving is zero.
+      #
+      # `--ignore-filename-regex 'src/tests'` is NOT optional. The tests live
+      # in-crate under `#[cfg(test)]`, so they are instrumented alongside the real
+      # code; at ~1370 lines against ~670 lines of source they would dominate the
+      # result while being covered tautologically.
+      #
+      # This measures the in-crate tests only, so `main()` — which nothing but the
+      # black-box script exercises — counts as uncovered. Reported, never gated:
+      # there is no `--fail-under`, so this job fails only if the tests themselves do.
+      - name: Measure coverage
+        shell: bash
+        run: |
+          cargo llvm-cov --summary-only --ignore-filename-regex 'src/tests' \
+            | tee coverage.txt
+          {
+            echo '### Test coverage'
+            echo
+            echo 'In-crate tests (`cargo test`), excluding the test code itself.'
+            echo '`main()` is not exercised by these tests, only by'
+            echo '`scripts/integration_test.py`, so `src/main.rs` reads low here.'
+            echo
+            echo '```'
+            cat coverage.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   msrv:
     name: Check minimal supported rust version (MSRV).
     runs-on: ubuntu-latest
