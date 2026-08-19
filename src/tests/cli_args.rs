@@ -72,6 +72,37 @@ fn max_connections_has_a_default_and_rejects_zero() {
     assert!(parse(&["-m", "0"]).is_err(), "0 is rejected");
 }
 
+/// Per-connection id tags are on by default and `--no-connection-ids` is the
+/// opt-out: the flag takes no value and flips the positively-named
+/// `connection_ids` field to `false`.
+#[test]
+fn connection_ids_default_on_with_no_connection_ids_opt_out() {
+    use clap::Parser;
+
+    fn parse(extra: &[&str]) -> Result<Arguments, clap::Error> {
+        let mut argv = vec!["logged_tcp_proxy", "-b", "127.0.0.1:0", "-r", "127.0.0.1:0"];
+        argv.extend_from_slice(extra);
+        Arguments::try_parse_from(argv)
+    }
+
+    assert!(
+        parse(&[])
+            .expect("omitting --no-connection-ids should parse")
+            .connection_ids,
+        "connection ids must be enabled by default"
+    );
+    assert!(
+        !parse(&["--no-connection-ids"])
+            .expect("--no-connection-ids should parse")
+            .connection_ids,
+        "--no-connection-ids must disable connection ids"
+    );
+    assert!(
+        parse(&["--no-connection-ids", "true"]).is_err(),
+        "the flag takes no value"
+    );
+}
+
 /// The CLI value enums must expose exactly the value names the proxy has always
 /// accepted. These names used to come from hand-written `ValueEnum`/`FromStr`/
 /// `Display` impls and are now derived (`#[derive(ValueEnum)]` plus the

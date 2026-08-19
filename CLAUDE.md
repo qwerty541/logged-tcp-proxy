@@ -61,6 +61,10 @@ All source lives in `src/`:
   or a `hostname:port` (→ `TargetAddr::Named`, resolved via DNS at connect time),
   validating only the address *shape* at parse time so an obviously malformed value
   is rejected at startup. `--bind-listener-addr` stays a literal `net::SocketAddr`.
+
+  The `connection_ids` field is a positively-named `bool` behind the opt-out
+  `--no-connection-ids` flag (`ArgAction::SetFalse`, default `true`): it controls
+  the per-connection `[#N]` id tags on console output.
 - [`src/conn.rs`](src/conn.rs) — the networking core:
   - `initialize_tcp_listener(arguments)` (`pub`, returns `io::Result<()>`) — binds
     the `TcpListener` (returning `Err` on a bind failure instead of panicking),
@@ -68,8 +72,12 @@ All source lives in `src/`:
     the accept loop alongside `tokio::signal::ctrl_c()`, so Ctrl-C stops the
     listener and returns `Ok(())` for a clean exit.
   - `run_accept_loop(listener, arguments)` (`pub(crate)`) — the accept loop:
-    for each accepted connection it logs the peer address and spawns
-    `incoming_connection_handle`. Concurrency is bounded by a `tokio::sync::Semaphore`
+    for each accepted connection it mints the next per-run connection id (a plain
+    local `u64` counter starting at 1 — the accept loop is a single task and the
+    only writer, and each handler receives the value by copy, so no atomics are
+    needed; ids are minted only for successful accepts), logs the peer address
+    tagged `[#N]`, and spawns `incoming_connection_handle` with the connection's
+    log prefix. Concurrency is bounded by a `tokio::sync::Semaphore`
     sized to `--max-connections`: a permit is acquired *before* `accept()` (so at
     capacity the loop stops pulling from the backlog — backpressure) and held by the
     connection task until it closes. An `accept()` error is logged and retried after
@@ -77,8 +85,11 @@ All source lives in `src/`:
     a persistent failure such as file-descriptor exhaustion can't spin the loop.
     Extracted from `initialize_tcp_listener` so it can be driven by tests with a
     pre-bound (ephemeral-port) listener.
-  - `incoming_connection_handle(arguments, source_stream)` (private) — sets up
-    the per-connection bidirectional relay (see below).
+  - `incoming_connection_handle(arguments, source_stream, log_prefix, client_addr)`
+    (private) — sets up the per-connection bidirectional relay (see below), tagging
+    all of the connection's log output with the `[#N] ` prefix built by
+    `connection_log_prefix` (an empty string with `--no-connection-ids`, which
+    renders byte-for-byte like no prefix at all).
   - `connect_to_target(target)` (private) — opens the destination `TcpStream` for
     one client: a `TargetAddr::Socket` is dialed directly (no DNS), a
     `TargetAddr::Named` is resolved via DNS here (once per connection, tokio trying
@@ -96,8 +107,8 @@ All source lives in `src/`:
   integration tests, compiled only under `#[cfg(test)]`. `tests.rs` is just the
   module root (a doc header plus the `mod` declarations); the tests themselves live
   in submodules grouped by the behavior they cover — `relay`, `teardown`, `errors`,
-  `real_protocols`, `idle_timeout`, `accept_loop`, `hostname`, `cli_args` and
-  `formatting` —
+  `real_protocols`, `idle_timeout`, `accept_loop`, `hostname`, `cli_args`,
+  `conn_ids` and `formatting` —
   alongside two scaffolding-only modules, `helpers` (the shared constants, echo
   servers, proxy spawners and client assertions) and `log_capture` (the capturing
   `log` sink used to assert on what the proxy logged). Because `mod tests;` in
@@ -120,6 +131,9 @@ All source lives in `src/`:
    **returns** (no panic); dropping the source halves closes the already-accepted
    client connection cleanly. On success — for a hostname target — it logs the
    resolved peer address, then wraps the stream in another `LoggedStream` and splits it.
+   Both `LoggedStream`s' console loggers carry the connection's `[#N] ` prefix, and
+   the per-connection lifecycle lines (accept, connect failure, `Connected to
+   destination`, idle close) start with the same tag.
 3. Relays both directions concurrently with `tokio::join!` over two `relay`
    futures (one connection task, not two spawned per-direction tasks), running
    each direction to completion:
@@ -135,7 +149,9 @@ All source lives in `src/`:
    `ActivityClock` on every chunk, and `wait_until_idle` tears the connection down
    once **both** directions have been silent for the timeout. Activity in either
    direction resets it, so an actively-transferring one-directional connection is
-   never interrupted. With no `--timeout`, there is no idle timeout at all.
+   never interrupted. With no `--timeout`, there is no idle timeout at all. The
+   idle-close line names the client it closed (`Closing idle connection from
+   <client> ...`), so it is self-correlating even without the `[#N]` tag.
 
 ### Logging / de-duplication detail (intentional)
 
@@ -147,13 +163,31 @@ deliberately does **not** re-log payload, because those bytes are the same ones
 already shown on the source side. This avoids printing every byte twice. The
 console sink is `ConsoleLogger` at the `"debug"` label.
 
+### Per-connection id tags
+
+Every console line belonging to a connection starts with a `[#N] ` tag — the
+id minted at accept. **Both** connections' `ConsoleLogger`s are built with
+`.with_prefix("[#N] ")` (note the trailing space: logged-stream 0.7.0 renders the
+prefix verbatim immediately before the record-kind character, with no separator of
+its own), and the per-connection lifecycle lines emitted via `log::info!`/
+`log::error!` — the accept line, the connect-failure error, both `Connected to
+destination` variants, and the idle-close line — carry the same tag, so every
+line of a connection is attributable. Only listener-level lines (bind, accept
+errors) are untagged. `--no-connection-ids` disables the tags: the prefix becomes
+the empty string, which `ConsoleLogger` renders byte-for-byte like no prefix, so
+the untagged output shape is reproduced exactly. The stream records — payload,
+shutdown, drop — log at the `"debug"` label, except `Error` records, which
+logged-stream escalates to the `error` level (prefix intact); the lifecycle lines
+above log at `info` (the connect failure at `error`).
+
 ### Error handling and shutdown
 
 Runtime failures are handled gracefully rather than by panicking:
 
 - **Bind failure** (e.g. the listen address is in use) — logged, and
   `initialize_tcp_listener` returns `Err`; `main` then exits with status `1`.
-- **Destination connect or DNS-resolution failure** — logged; that one connection
+- **Destination connect or DNS-resolution failure** — logged (tagged with the
+  connection's `[#N]` id); that one connection
   is dropped cleanly (closing the client), the listener keeps serving other clients.
   (A `hostname:port` remote is resolved per connection, so an unresolvable name is
   handled exactly like an unreachable address.)
@@ -176,11 +210,13 @@ valid level, so they cannot panic at runtime.)
 - `clap` (`std`, `derive`) — CLI parsing.
 - `env_logger` + `log` — logging frontend/facade.
 - `bytes` — `BytesMut` relay buffers.
-- `logged-stream` (`0.6.0`) — the companion crate (same author) that provides
+- `logged-stream` (`0.7.0`) — the companion crate (same author) that provides
   `LoggedStream`, the `BufferFormatter` implementations
   (`DecimalFormatter`, `LowercaseHexadecimalFormatter`,
   `UppercaseHexadecimalFormatter`, `BinaryFormatter`, `OctalFormatter`),
-  `ConsoleLogger`, `DefaultFilter`, `RecordKindFilter`, and `RecordKind`.
+  `ConsoleLogger` (including the per-line prefix set via `with_prefix`, used for
+  the per-connection `[#N]` id tags), `DefaultFilter`, `RecordKindFilter`, and
+  `RecordKind`.
 
 Dev-dependencies (test-only; not compiled into the published binary and irrelevant
 to its users):
@@ -201,6 +237,7 @@ to its users):
 -f, --formatting <FORMATTING>                [default: lowerhex]  decimal|lowerhex|upperhex|binary|octal
 -s, --separator <STRING>                     byte separator in output [default: ":"]
 -p, --precision <PRECISION>                  [default: seconds]  seconds|milliseconds|microseconds|nanoseconds
+    --no-connection-ids                      disable the per-connection [#N] id tag on console output lines
 ```
 
 `--bind-listener-addr` is parsed as `std::net::SocketAddr`, so it must be a literal
@@ -262,7 +299,11 @@ The suite is grouped into submodules by behavior ([`relay`](src/tests/relay.rs),
 [`idle_timeout`](src/tests/idle_timeout.rs),
 [`accept_loop`](src/tests/accept_loop.rs), [`hostname`](src/tests/hostname.rs),
 [`cli_args`](src/tests/cli_args.rs),
-[`formatting`](src/tests/formatting.rs) — the only module with no I/O at all: it
+[`conn_ids`](src/tests/conn_ids.rs) — the per-connection `[#N]` id tags on the
+lifecycle lines and the `--no-connection-ids` opt-out; the payload lines log at
+`debug`, which the shared capture deliberately filters out, so their tags are
+pinned by the black-box script instead —
+and [`formatting`](src/tests/formatting.rs) — the only module with no I/O at all: it
 pins what each `--formatting` mode renders and where `--separator` is placed),
 plus two scaffolding-only modules:
 [`helpers`](src/tests/helpers.rs) and [`log_capture`](src/tests/log_capture.rs).
@@ -317,18 +358,39 @@ covers several cases:
   from the request (an echo server cannot distinguish the directions), `<` marks
   the client's bytes and `>` the remote's, the markers are not swapped, and each
   payload is logged **exactly once** — pinning the deliberate `RecordKindFilter`
-  on the destination stream that stops every byte being printed twice.
+  on the destination stream that stops every byte being printed twice. Also pins
+  that both payload directions carry the same `[#N]` connection-id tag.
+- **per-connection ids** — with two clients held open concurrently, each
+  connection's lines carry its own distinct `[#N]` tag (accept line, payload
+  lines, and **exactly two** tagged `x Deallocated.` Drop records per connection —
+  one per stream, the exact count being what pins the destination logger's
+  prefix, since a bare presence check would pass vacuously via the source
+  stream's identical record), correlated through each client's own local port;
+  and `--no-connection-ids` removes the tags entirely while the output otherwise
+  stays intact. Ids are extracted by regex, never hardcoded: the script's
+  listener-readiness probe is itself an accepted connection, so the data
+  connection is never simply `#1`. The Drop-record wait is a bounded poll over a
+  stdout-drain thread, not a fixed sleep (the records are emitted only after the
+  handlers observe both EOFs, and SIGTERM discards unwritten records).
 - **level filtering** — the payload appears at `--level debug` and is suppressed at
   `--level info`, while the `INFO` lifecycle lines still print (so the absence
   cannot pass vacuously).
+- **hostname remote** — relays through a `localhost:<port>` remote (DNS-resolved)
+  and logs the tagged resolved-destination INFO line.
 - **real HTTP** — a real request/response (stdlib `http.server` + `urllib`) is
   relayed through the proxy.
 - **real MODBUS** — a real MODBUS TCP read-holding-registers exchange (frames
   hand-built with `struct`) is relayed, and the proxy is checked to have logged
   the request frame in hex.
-- **unreachable remote** — with the remote down, the proxy logs the failure,
-  closes the client cleanly, keeps serving, and does not print a panic.
+- **unreachable remote** — with the remote down, the proxy logs the failure
+  (tagged with the connection's id), closes the client cleanly, keeps serving,
+  and does not print a panic.
+- **unresolvable remote** — a hostname that never resolves (`.invalid`) is
+  handled like an unreachable address: the tagged failure is logged, the client
+  closed, the proxy keeps serving.
 - **bind failure** — binding an in-use address exits non-zero without panicking.
+- **threads** — the proxy serves with a non-default `--threads` count and
+  rejects `0`.
 - **Ctrl-C** — SIGINT shuts the proxy down with exit code `0` (POSIX only).
 
 It uses only the Python standard library (no `pip` packages), so it runs the same

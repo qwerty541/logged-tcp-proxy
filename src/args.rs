@@ -329,4 +329,11 @@ pub struct Arguments {
     /// Timestamp precision.
     #[arg(short, long, default_value = "seconds")]
     pub precision: TimestampPrecision,
+    /// Disable the per-connection id tag (`[#N]`) on console output lines, e.g.
+    /// when only a single connection is proxied and the tags add nothing.
+    // `ArgAction::SetFalse` names the flag after the *disabled* state while the
+    // field keeps positive semantics: it defaults to `true` and the flag's
+    // presence sets it to `false`.
+    #[arg(long = "no-connection-ids", action = clap::ArgAction::SetFalse)]
+    pub connection_ids: bool,
 }

@@ -39,15 +39,36 @@ pub(super) fn install_capturing_logger() {
     });
 }
 
-/// The `<target>` field of every captured `Connected to destination <target> ...`
-/// line. Returned for exact-equality comparison, so one test's ephemeral port can
-/// never match another's merely by being a prefix of it (`:4523` vs `:45231`).
+/// Strip a leading `[#N] ` connection-id tag from a captured line, returning the
+/// bare message. A line without the tag (a listener-level line, or any line with
+/// `--no-connection-ids`) is returned unchanged.
+fn strip_conn_tag(line: &str) -> &str {
+    line.strip_prefix("[#")
+        .and_then(|rest| rest.split_once("] "))
+        .filter(|(id, _)| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()))
+        .map_or(line, |(_, message)| message)
+}
+
+/// A snapshot of every captured log message. Per the module comment, assertions
+/// on it must key off the test's own unique ephemeral addresses.
+pub(super) fn captured_lines() -> Vec<String> {
+    CAPTURED_LOGS
+        .lock()
+        .expect("captured logs mutex poisoned")
+        .clone()
+}
+
+/// The `<target>` field of every captured `[#N] Connected to destination <target> ...`
+/// line (the per-connection `[#N] ` tag is stripped first, and is optional so the
+/// helper also works with `--no-connection-ids`). Returned for exact-equality
+/// comparison, so one test's ephemeral port can never match another's merely by
+/// being a prefix of it (`:4523` vs `:45231`).
 pub(super) fn logged_destinations() -> Vec<String> {
     CAPTURED_LOGS
         .lock()
         .expect("captured logs mutex poisoned")
         .iter()
-        .filter_map(|line| line.strip_prefix("Connected to destination "))
+        .filter_map(|line| strip_conn_tag(line).strip_prefix("Connected to destination "))
         .filter_map(|rest| rest.split_whitespace().next())
         .map(str::to_string)
         .collect()

@@ -7,6 +7,7 @@ use logged_stream::DefaultFilter;
 use logged_stream::LoggedStream;
 use logged_stream::RecordKind;
 use logged_stream::RecordKindFilter;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -75,6 +76,11 @@ pub(crate) async fn run_accept_loop(listener: tokio_net::TcpListener, arguments:
     // spawning unbounded handlers; each handler holds its permit until it closes.
     let connection_limit = Arc::new(Semaphore::new(arguments.max_connections as usize));
     let mut accept_backoff = ACCEPT_BACKOFF_MIN;
+    // Per-connection ids are minted here, sequentially in accept order, starting at
+    // 1 for each proxy run. A plain (non-atomic) counter is deliberate: this accept
+    // loop is a single task and the only writer, and each spawned handler receives
+    // the value by copy, so there is nothing to synchronize.
+    let mut next_conn_id: u64 = 1;
     loop {
         let Ok(permit) = connection_limit.clone().acquire_owned().await else {
             break; // the semaphore is never closed, so this only ends a stuck loop
@@ -83,9 +89,12 @@ pub(crate) async fn run_accept_loop(listener: tokio_net::TcpListener, arguments:
         match listener.accept().await {
             Ok((stream, addr)) => {
                 accept_backoff = ACCEPT_BACKOFF_MIN; // recovered -> reset the backoff
-                log::info!("Incoming connection from {addr}");
+                let conn_id = next_conn_id;
+                next_conn_id += 1;
+                let log_prefix = connection_log_prefix(&arguments, conn_id);
+                log::info!("{log_prefix}Incoming connection from {addr}");
                 tokio::spawn(async move {
-                    incoming_connection_handle(cloned_arguments, stream).await;
+                    incoming_connection_handle(cloned_arguments, stream, log_prefix, addr).await;
                     drop(permit); // release the slot once the connection is done
                 });
             }
@@ -118,18 +127,37 @@ async fn connect_to_target(target: &TargetAddr) -> io::Result<tokio_net::TcpStre
     }
 }
 
-async fn incoming_connection_handle(arguments: Arguments, source_stream: tokio_net::TcpStream) {
+/// The tag prepended to every console line belonging to connection `conn_id` —
+/// `"[#N] "` (trailing space included, since [`ConsoleLogger`] renders the prefix
+/// verbatim with no separator of its own) — or an empty string when
+/// `--no-connection-ids` disabled the tags. An empty prefix renders byte-for-byte
+/// like no prefix at all, so the disabled path reproduces the untagged output
+/// exactly through the same code.
+fn connection_log_prefix(arguments: &Arguments, conn_id: u64) -> String {
+    if arguments.connection_ids {
+        format!("[#{conn_id}] ")
+    } else {
+        String::new()
+    }
+}
+
+async fn incoming_connection_handle(
+    arguments: Arguments,
+    source_stream: tokio_net::TcpStream,
+    log_prefix: String,
+    client_addr: SocketAddr,
+) {
     let (source_stream_read_half, source_stream_write_half) = io::split(LoggedStream::new(
         source_stream,
         get_formatter_by_kind(arguments.formatting, arguments.separator.as_str()),
         DefaultFilter,
-        ConsoleLogger::new_unchecked("debug"),
+        ConsoleLogger::new_unchecked("debug").with_prefix(log_prefix.clone()),
     ));
     let destination_stream = match connect_to_target(&arguments.remote_addr).await {
         Ok(stream) => stream,
         Err(error) => {
             log::error!(
-                "Failed to connect to destination {}: {error}",
+                "{log_prefix}Failed to connect to destination {}: {error}",
                 arguments.remote_addr
             );
             // Returning drops the source halves, closing the client connection.
@@ -143,20 +171,24 @@ async fn incoming_connection_handle(arguments: Arguments, source_stream: tokio_n
     // never silently swallows it. (A literal `IP:port` target would just repeat itself,
     // so it is left out.)
     if let TargetAddr::Named { .. } = &arguments.remote_addr {
-        match destination_stream.peer_addr() {
-            Ok(peer) => log::info!(
-                "Connected to destination {} ({peer})",
-                arguments.remote_addr
-            ),
-            Err(_) => log::info!("Connected to destination {}", arguments.remote_addr),
-        }
+        let peer_suffix = destination_stream
+            .peer_addr()
+            .map(|peer| format!(" ({peer})"))
+            .unwrap_or_default();
+        log::info!(
+            "{log_prefix}Connected to destination {}{peer_suffix}",
+            arguments.remote_addr
+        );
     }
+    // The destination stream carries the same `[#N] ` prefix as the source stream:
+    // its Drop/Error/Shutdown records are the connection's lines too, and without
+    // the shared tag they would be unattributable.
     let (destination_stream_read_half, destination_stream_write_half) =
         io::split(LoggedStream::new(
             destination_stream,
             get_formatter_by_kind(arguments.formatting, arguments.separator.as_str()),
             RecordKindFilter::new(&[RecordKind::Drop, RecordKind::Error, RecordKind::Shutdown]),
-            ConsoleLogger::new_unchecked("debug"),
+            ConsoleLogger::new_unchecked("debug").with_prefix(log_prefix.clone()),
         ));
 
     // Relay both directions concurrently, running each to completion. As each
@@ -194,11 +226,23 @@ async fn incoming_connection_handle(arguments: Arguments, source_stream: tokio_n
                     ),
                 );
             };
+            // The idle-close line is logged *inside* the winning branch's future,
+            // not in the arm handler: `select!` drops the losing `relays` future —
+            // closing the sockets and sending the FIN — before an arm handler
+            // would run, so logging in the handler could let a peer observe the
+            // close before the line exists. Logging first also orders the line
+            // before the streams' shutdown/drop records.
             tokio::select! {
                 _ = relays => {}
-                _ = wait_until_idle(&clock, idle) => {
-                    log::info!("Closing idle connection after {seconds}s of inactivity");
-                }
+                _ = async {
+                    wait_until_idle(&clock, idle).await;
+                    // The client address makes the line self-correlating even where
+                    // the `[#N]` tag is absent (`--no-connection-ids`) or ambiguous
+                    // (ids restart at 1 for every proxy run).
+                    log::info!(
+                        "{log_prefix}Closing idle connection from {client_addr} after {seconds}s of inactivity"
+                    );
+                } => {}
             }
         }
     }

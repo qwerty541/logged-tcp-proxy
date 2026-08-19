@@ -14,6 +14,7 @@
 
 mod accept_loop;
 mod cli_args;
+mod conn_ids;
 mod errors;
 mod formatting;
 mod helpers;
