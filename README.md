@@ -60,6 +60,9 @@ uppercase), decimal, octal, or binary, with a configurable byte separator.
   picked up), while `--bind-listener-addr` stays a literal address.
 - Logs the payload in lowercase hex, uppercase hex, decimal, octal, or binary, with a
   configurable byte separator (`--separator`).
+- Tags every console line belonging to a connection with a per-connection id
+  (`[#1]`, `[#2]`, ...), so the interleaved output of concurrent connections can be
+  told apart (disable with `--no-connection-ids`).
 - Optional whole-connection idle timeout (`--timeout`); waits indefinitely by default.
 - Bounded concurrency with backpressure (`--max-connections`, default 512) — serves
   many clients at once and stops accepting new ones only when at capacity.
@@ -126,17 +129,19 @@ logged_tcp_proxy --bind-listener-addr 127.0.0.1:20502 --remote-addr 127.0.0.1:20
 curl http://127.0.0.1:20502/
 ```
 
-The request and response bytes now appear in the proxy's console, each line marked
-`<` (bytes read from the client) or `>` (bytes written back to it). Press Ctrl-C to
-stop the proxy; it shuts down cleanly and exits with status `0`. See the
-[Example](#example) below for an annotated run and how to read the output.
+The request and response bytes now appear in the proxy's console, each line tagged
+with the connection's id (`[#1]`) and marked `<` (bytes read from the client) or `>`
+(bytes written back to it). Press Ctrl-C to stop the proxy; it shuts down cleanly and
+exits with status `0`. See the [Example](#example) below for an annotated run and how
+to read the output.
 
 > [!NOTE] 
 > `--remote-addr` accepts an `IP:port` or a `hostname:port` (a hostname is resolved
 > via DNS each time a connection is opened) and must point at an address where
 > something is already listening. If nothing is there — or the hostname does not
-> resolve — the proxy logs `Failed to connect to destination ...`, closes that client,
-> and keeps serving other connections — no payload is printed.
+> resolve — the proxy logs a `Failed to connect to destination ...` line (tagged with
+> that connection's `[#N]` id), closes that client, and keeps serving other
+> connections — no payload is printed.
 
 ## Options
 
@@ -154,6 +159,7 @@ Below are the supported command-line options. The general form is
 | `-f, --formatting` | Console payload output format | `lowerhex` | `decimal`, `lowerhex`, `upperhex`, `binary`, `octal` |
 | `-s, --separator` | Byte separator in the console payload output | `:` | any string |
 | `-p, --precision` | Timestamp precision | `seconds` | `seconds`, `milliseconds`, `microseconds`, `nanoseconds` |
+| `--no-connection-ids` | Disable the per-connection id tag (`[#N]`) on console output lines, e.g. when only a single connection is proxied and the tags add nothing | _(ids enabled)_ | _(flag, takes no value)_ |
 
 Run `logged_tcp_proxy --help` for the canonical usage output (it also lists `-h, --help` and `-V, --version`).
 
@@ -170,22 +176,27 @@ followed by the console output it produces.
 ```
 $ logged_tcp_proxy --bind-listener-addr 127.0.0.1:20502 --remote-addr 127.0.0.1:20582
 [2023-05-04T02:39:33Z INFO] Listener bound to 127.0.0.1:20502, waiting for incoming connections...
-[2023-05-04T02:39:37Z INFO] Incoming connection from 127.0.0.1:50376
-[2023-05-04T02:39:37Z DEBUG] < 00:00:00:00:00:19:6f:03:16:00:1f:00:20:00:11:00:22:00:33:00:44:00:55:00:66:00:01:00:00:00:00
-[2023-05-04T02:39:37Z DEBUG] > 00:00:00:00:00:0b:6f:10:03:f1:00:02:04:00:00:00:00
-[2023-05-04T02:39:37Z DEBUG] < 00:00:00:00:00:06:6f:10:03:f1:00:02
-[2023-05-04T02:39:37Z DEBUG] > 00:01:00:00:00:06:6f:03:00:7a:00:01:00:02:00:00:00:06:6f:03:00:7b:00:02
-[2023-05-04T02:39:37Z DEBUG] < 00:01:00:00:00:05:6f:03:02:02:ff:00:02:00:00:00:07:6f:03:04:00:00:00:01
-[2023-05-04T02:39:37Z DEBUG] > 00:03:00:00:00:06:01:01:00:01:00:01:00:04:00:00:00:06:01:02:00:01:00:01:00:05:00:00:00:06:01:03:00:01:00:10:00:06:00:00:00:06:01:03:00:11:00:01:00:07:00:00:00:06:01:03:00:7b:00:01:00:08:00:00:00:06:01:03:0f:a0:00:01:00:09:00:00:00:06:01:03:13:88:00:03:00:0a:00:00:00:06:01:04:00:01:00:01
-[2023-05-04T02:39:37Z DEBUG] < 00:03:00:00:00:04:01:01:01:01:00:04:00:00:00:04:01:02:01:01:00:05:00:00:00:23:01:03:20:00:7b:00:0c:ff:ff:ff:ff:ff:ff:ff:ff:ff:ff:ff:ff:01:36:40:49:0f:db:40:09:21:fb:54:44:2d:18:ff:ff:00:06:00:00:00:05:01:03:02:ff:ff:00:07:00:00:00:05:01:03:02:00:01:00:08:00:00:00:03:01:83:02:00:09:00:00:00:09:01:03:06:00:01:00:02:00:03:00:0a:00:00:00:05:01:04:02:00:7b
-[2023-05-04T02:40:18Z DEBUG] > 00:0b:00:00:00:06:6f:03:03:e8:00:01
-[2023-05-04T02:40:18Z DEBUG] < 00:0b:00:00:00:05:6f:03:02:00:00
+[2023-05-04T02:39:37Z INFO] [#1] Incoming connection from 127.0.0.1:50376
+[2023-05-04T02:39:37Z DEBUG] [#1] < 00:00:00:00:00:19:6f:03:16:00:1f:00:20:00:11:00:22:00:33:00:44:00:55:00:66:00:01:00:00:00:00
+[2023-05-04T02:39:37Z DEBUG] [#1] > 00:00:00:00:00:0b:6f:10:03:f1:00:02:04:00:00:00:00
+[2023-05-04T02:39:37Z DEBUG] [#1] < 00:00:00:00:00:06:6f:10:03:f1:00:02
+[2023-05-04T02:39:37Z DEBUG] [#1] > 00:01:00:00:00:06:6f:03:00:7a:00:01:00:02:00:00:00:06:6f:03:00:7b:00:02
+[2023-05-04T02:39:37Z DEBUG] [#1] < 00:01:00:00:00:05:6f:03:02:02:ff:00:02:00:00:00:07:6f:03:04:00:00:00:01
+[2023-05-04T02:39:37Z DEBUG] [#1] > 00:03:00:00:00:06:01:01:00:01:00:01:00:04:00:00:00:06:01:02:00:01:00:01:00:05:00:00:00:06:01:03:00:01:00:10:00:06:00:00:00:06:01:03:00:11:00:01:00:07:00:00:00:06:01:03:00:7b:00:01:00:08:00:00:00:06:01:03:0f:a0:00:01:00:09:00:00:00:06:01:03:13:88:00:03:00:0a:00:00:00:06:01:04:00:01:00:01
+[2023-05-04T02:39:37Z DEBUG] [#1] < 00:03:00:00:00:04:01:01:01:01:00:04:00:00:00:04:01:02:01:01:00:05:00:00:00:23:01:03:20:00:7b:00:0c:ff:ff:ff:ff:ff:ff:ff:ff:ff:ff:ff:ff:01:36:40:49:0f:db:40:09:21:fb:54:44:2d:18:ff:ff:00:06:00:00:00:05:01:03:02:ff:ff:00:07:00:00:00:05:01:03:02:00:01:00:08:00:00:00:03:01:83:02:00:09:00:00:00:09:01:03:06:00:01:00:02:00:03:00:0a:00:00:00:05:01:04:02:00:7b
+[2023-05-04T02:40:18Z DEBUG] [#1] > 00:0b:00:00:00:06:6f:03:03:e8:00:01
+[2023-05-04T02:40:18Z DEBUG] [#1] < 00:0b:00:00:00:05:6f:03:02:00:00
 ```
 
 How to read this output:
 
 - `INFO` lines are lifecycle events — the listener binding (`Listener bound to ...`,
   the proxy's "ready" signal) and each accepted connection (`Incoming connection from ...`).
+- `[#N]` is the per-connection id, assigned in accept order starting at 1: every line
+  belonging to that connection — the `Incoming connection` line and its payload lines —
+  carries the same id. When several clients are connected at once, their lines
+  interleave and the id is what tells them apart. Listener-level lines (the bind
+  line, accept errors) carry no id. Disable the tags with `--no-connection-ids`.
 - `DEBUG` lines are the relayed payload, shown here in the default lowercase-hex
   format with `:` separators (change with `--formatting` and `--separator`).
 - `<` marks bytes **read from the client** (source) side; `>` marks bytes **written

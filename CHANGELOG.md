@@ -11,9 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Added a `--threads` (`-w`) option (default 4, range 1..=1024) that controls how many worker threads the async runtime uses. The count was previously fixed at 4 at compile time; raising it lets the proxy use more cores under heavy concurrent load.
 - `--remote-addr` now accepts a `hostname:port` (resolved via DNS) in addition to a literal `IP:port`, so you can point the proxy at a named service without looking up its address first. The hostname is resolved lazily each time a connection is opened, so DNS changes and failover are picked up between connections, and — for a hostname target — the resolved destination address is logged on connect; a literal `IP:port` is still connected to directly with no lookup. An unresolvable name is handled like an unreachable address (logged, that client closed, the proxy keeps serving). `--bind-listener-addr` continues to require a literal address.
+- Every console line belonging to a proxied connection is now tagged with a per-connection id (`[#1]`, `[#2]`, ...), assigned in accept order: the `Incoming connection` line, the relayed-payload lines, the stream shutdown/close/error records, the destination connect-failure and `Connected to destination` lines, and the idle-close line. This makes the interleaved output of concurrently proxied connections attributable to the right connection. Note this changes the shape of existing output — payload lines now read `[ts DEBUG] [#1] < ...` instead of `[ts DEBUG] < ...`; listener-level lines (bind, accept errors) carry no id. A new `--no-connection-ids` flag disables the tags and restores the untagged line shapes (except the idle-close line, which now always names the client — see Changed), e.g. when only a single connection is proxied and the tags add nothing.
 
 ### Changed
 
+- The idle-close line now names the client whose connection was closed (`Closing idle connection from <client> after <N>s of inactivity`), so it identifies the connection even with `--no-connection-ids`.
 - Updated the `--help` output template to include author information and repository link.
 
 ### Documentation

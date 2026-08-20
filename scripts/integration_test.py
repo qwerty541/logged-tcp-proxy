@@ -28,6 +28,7 @@ Exits 0 if every case passes, non-zero otherwise.
 import http.server
 import os
 import platform
+import re
 import signal
 import socket
 import struct
@@ -43,7 +44,15 @@ START_TIMEOUT = 15.0  # seconds to wait for the proxy to start listening
 IO_TIMEOUT = 5.0      # seconds for any single client socket operation
 
 
-def fail(message):
+def fail(message, output=None):
+    """Print the failure and exit non-zero.
+
+    Pass the proxy's captured output as `output` whenever it is available: it is
+    dumped before the message (so the `FAIL:` line stays last and easy to spot),
+    which is usually the only diagnostic material for a failure that reproduces
+    on a CI runner and not locally."""
+    if output is not None:
+        print("---- proxy output ----\n" + output + "----------------------")
     print("FAIL: " + message)
     sys.exit(1)
 
@@ -150,6 +159,41 @@ def stop_proxy(proxy):
     return output
 
 
+def start_output_drain(proxy):
+    """Continuously read the proxy's stdout into a list of lines from a background
+    thread, so a test can poll the output while the proxy is still running. Once
+    started, the thread owns the pipe: collect the final output with
+    `drain_proxy_output()` instead of `stop_proxy()`. Returns (thread, lines)."""
+    lines = []
+
+    def _drain():
+        for line in proxy.stdout:
+            lines.append(line)
+
+    thread = threading.Thread(target=_drain, daemon=True)
+    thread.start()
+    return thread, lines
+
+
+def drain_proxy_output(proxy, thread, lines):
+    """Terminate the proxy and return everything the drain thread captured."""
+    proxy.terminate()
+    try:
+        proxy.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proxy.kill()
+        proxy.wait()
+    thread.join(timeout=5)
+    return "".join(lines)
+
+
+def assert_tagged_connect_failure(output, case):
+    """Assert the tagged connect-failure line was logged. Presence, not a count:
+    the listener-readiness probe produces its own tagged failure line too."""
+    if not re.search(r"\[#\d+\] Failed to connect to destination", output):
+        fail("[%s] the tagged connect-failure line was not logged" % case, output)
+
+
 def recv_exact(sock, count):
     """Read exactly `count` bytes from `sock`, or None on early EOF."""
     chunks = []
@@ -163,7 +207,7 @@ def recv_exact(sock, count):
     return b"".join(chunks)
 
 
-def start_proxy(binary, remote_port, level="debug"):
+def start_proxy(binary, remote_port, level="debug", extra_args=()):
     """Spawn the proxy on a free port pointing at `remote_port`. Returns (proc, port)."""
     proxy_port = free_port()
     proxy = subprocess.Popen(
@@ -172,7 +216,8 @@ def start_proxy(binary, remote_port, level="debug"):
             "--bind-listener-addr", "%s:%d" % (HOST, proxy_port),
             "--remote-addr", "%s:%d" % (HOST, remote_port),
             "--level", level,
-        ],
+        ]
+        + list(extra_args),
         cwd=ROOT,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -227,8 +272,7 @@ def run_case(binary, formatting, separator, render_byte):
 
     expected = separator.join(render_byte(b) for b in payload)
     if expected not in output:
-        print("---- proxy output ----\n" + output + "----------------------")
-        fail("[%s] payload not logged as %r" % (formatting, expected))
+        fail("[%s] payload not logged as %r" % (formatting, expected), output)
 
     print("OK [%s] relayed %d bytes and logged them as %s" % (formatting, len(payload), expected))
 
@@ -272,8 +316,10 @@ def test_direction_markers_and_no_double_logging(binary):
     uses a RecordKindFilter so the same bytes are not printed a second time. An echo
     server cannot check any of this — with identical bytes both ways, swapped markers
     and doubled lines both look correct — so this case uses a remote whose reply
-    differs from the request."""
-    request = bytes([0x11, 0x22, 0x33])
+    differs from the request. Both payloads contain hex letters on purpose: a
+    digit-only rendering (e.g. `11:22:33`) can collide with the RFC 3339 timestamp
+    env_logger stamps on every line, which would break the exactly-once count."""
+    request = bytes([0x1A, 0x2B, 0x3C])
     reply = bytes([0xAA, 0xBB, 0xCC])
     request_hex = ":".join("%02x" % b for b in request)
     reply_hex = ":".join("%02x" % b for b in reply)
@@ -300,25 +346,156 @@ def test_direction_markers_and_no_double_logging(binary):
 
     # Direction: the client's bytes are `<`, the remote's reply is `>`.
     if len(sent_out) != 1 or len(reply_in) != 1:
-        print("---- proxy output ----\n" + output + "----------------------")
         fail("[markers] expected exactly one `< %s` and one `> %s` line, got %d and %d"
-             % (request_hex, reply_hex, len(sent_out), len(reply_in)))
+             % (request_hex, reply_hex, len(sent_out), len(reply_in)), output)
 
     # Markers must not be swapped.
     if ("> " + request_hex) in output or ("< " + reply_hex) in output:
-        print("---- proxy output ----\n" + output + "----------------------")
-        fail("[markers] direction markers are swapped")
+        fail("[markers] direction markers are swapped", output)
+
+    # Both directions belong to one connection, so both payload lines must carry
+    # the SAME `[#N]` id tag. The id is extracted rather than assumed: the
+    # listener-readiness probe above is itself an accepted connection, so the data
+    # connection's id is never simply #1.
+    tagged_request = re.search(r"\[#(\d+)\] < " + re.escape(request_hex), output)
+    if tagged_request is None:
+        fail("[markers] the `<` payload line lacks its `[#N]` connection-id tag", output)
+    conn_id = tagged_request.group(1)
+    if ("[#%s] > %s" % (conn_id, reply_hex)) not in output:
+        fail("[markers] the `>` reply line does not carry the same `[#%s]` tag" % conn_id, output)
 
     # De-duplication: neither payload may appear more than once anywhere in the
     # output, which is what the destination stream's RecordKindFilter guarantees.
     for label, payload_hex in (("request", request_hex), ("reply", reply_hex)):
         occurrences = output.count(payload_hex)
         if occurrences != 1:
-            print("---- proxy output ----\n" + output + "----------------------")
             fail("[markers] the %s payload was logged %d times, expected exactly once"
-                 % (label, occurrences))
+                 % (label, occurrences), output)
 
     print("OK [markers] `<`/`>` mark the right direction and each payload is logged once")
+
+
+def test_connection_id_tags(binary):
+    """Concurrent connections get distinct `[#N]` ids, each bound to its own lines.
+
+    Two clients are held open at the same time, so this covers exactly the
+    interleaved output the ids exist to disentangle. Ids are extracted by regex and
+    correlated through the tagged accept lines and each client's own local port —
+    never assumed to be literal #1/#2, because the listener-readiness probe also
+    consumes an id."""
+    echo_server, echo_port = start_echo_server()
+    proxy, proxy_port = start_proxy(binary, echo_port)
+    # The drain thread owns the proxy's stdout from the start, so the test can
+    # poll the output while the proxy is still running (see the Drop-record wait
+    # below) — a fixed post-close sleep would race stop_proxy's SIGTERM, which
+    # discards records the proxy has not yet written.
+    drain, log_lines = start_output_drain(proxy)
+    # Letter-bearing bytes, so the hex renderings can never collide with an
+    # RFC 3339 timestamp (see test_direction_markers_and_no_double_logging).
+    payload_a = bytes([0x0A, 0x1B, 0x2C])
+    payload_b = bytes([0xD3, 0xE4, 0xF5])
+    hex_a = ":".join("%02x" % b for b in payload_a)
+    hex_b = ":".join("%02x" % b for b in payload_b)
+
+    def id_for(text, port, label):
+        found = re.search(
+            r"\[#(\d+)\] Incoming connection from %s:%d\b" % (re.escape(HOST), port),
+            text,
+        )
+        if found is None:
+            fail("[conn-ids] no tagged accept line for the %s client" % label, text)
+        return found.group(1)
+
+    try:
+        if not wait_for_listener(proxy_port):
+            fail("[conn-ids] proxy did not start listening")
+        with socket.create_connection((HOST, proxy_port), timeout=IO_TIMEOUT) as client_a, \
+                socket.create_connection((HOST, proxy_port), timeout=IO_TIMEOUT) as client_b:
+            client_a.settimeout(IO_TIMEOUT)
+            client_b.settimeout(IO_TIMEOUT)
+            port_a = client_a.getsockname()[1]
+            port_b = client_b.getsockname()[1]
+            # Both clients are open before either payload is sent: the connections
+            # genuinely overlap.
+            client_a.sendall(payload_a)
+            client_b.sendall(payload_b)
+            if recv_exact(client_a, len(payload_a)) != payload_a:
+                fail("[conn-ids] echo mismatch on the first client")
+            if recv_exact(client_b, len(payload_b)) != payload_b:
+                fail("[conn-ids] echo mismatch on the second client")
+        # The accept lines were logged before the round trips completed, so the
+        # ids are already extractable while the proxy still runs.
+        id_a = id_for("".join(log_lines), port_a, "first")
+        id_b = id_for("".join(log_lines), port_b, "second")
+        # Wait (bounded) for both connections' Drop records — emitted only after
+        # each handler observes both EOFs and drops its two LoggedStreams — before
+        # terminating the proxy.
+        deadline = time.time() + IO_TIMEOUT
+        while time.time() < deadline:
+            text = "".join(log_lines)
+            if all(text.count("[#%s] x Deallocated." % i) >= 2 for i in (id_a, id_b)):
+                break
+            time.sleep(0.05)
+    finally:
+        output = drain_proxy_output(proxy, drain, log_lines)
+        echo_server.close()
+
+    if id_a == id_b:
+        fail("[conn-ids] both connections got the same id #%s" % id_a, output)
+
+    # Each client's payload line carries its own connection's tag.
+    for conn_id, payload_hex, label in ((id_a, hex_a, "first"), (id_b, hex_b, "second")):
+        if ("[#%s] < %s" % (conn_id, payload_hex)) not in output:
+            fail("[conn-ids] the %s client's payload line is not tagged [#%s]"
+                 % (label, conn_id), output)
+
+    # Exactly TWO tagged Drop records per connection — one from the source stream
+    # (DefaultFilter logs Drop too) and one from the destination stream. The exact
+    # count is what pins the DESTINATION logger's prefix: if it lost the tag, only
+    # one tagged record per connection would remain (presence alone would pass
+    # vacuously via the source stream's record).
+    for conn_id, label in ((id_a, "first"), (id_b, "second")):
+        drops = output.count("[#%s] x Deallocated." % conn_id)
+        if drops != 2:
+            fail("[conn-ids] expected exactly 2 tagged Drop records for the %s "
+                 "connection (#%s), got %d" % (label, conn_id, drops), output)
+
+    print("OK [conn-ids] concurrent connections carry distinct ids #%s and #%s"
+          % (id_a, id_b))
+
+
+def test_no_connection_ids_flag(binary):
+    """`--no-connection-ids` disables the tags entirely.
+
+    The output returns to the untagged shape: no `[#` appears anywhere (the
+    env_logger `[ts LEVEL]` framing never contains that sequence), while the
+    payload and lifecycle lines still print."""
+    echo_server, echo_port = start_echo_server()
+    proxy, proxy_port = start_proxy(binary, echo_port, extra_args=("--no-connection-ids",))
+    payload = bytes([0x5A, 0x6B, 0x7C])
+    payload_hex = ":".join("%02x" % b for b in payload)
+    try:
+        if not wait_for_listener(proxy_port):
+            fail("[no-conn-ids] proxy did not start listening")
+        with socket.create_connection((HOST, proxy_port), timeout=IO_TIMEOUT) as client:
+            client.settimeout(IO_TIMEOUT)
+            client.sendall(payload)
+            if recv_exact(client, len(payload)) != payload:
+                fail("[no-conn-ids] echo mismatch")
+        # No flush wait needed: the asserted payload and accept lines are logged
+        # before the client can receive its echo, and the `[#` check is an absence.
+    finally:
+        output = stop_proxy(proxy)
+        echo_server.close()
+
+    if payload_hex not in output:
+        fail("[no-conn-ids] the payload must still be logged without connection ids", output)
+    if "Incoming connection from" not in output:
+        fail("[no-conn-ids] the accept line must still be logged without connection ids", output)
+    if "[#" in output:
+        fail("[no-conn-ids] output must carry no `[#N]` tags with --no-connection-ids", output)
+
+    print("OK [no-conn-ids] --no-connection-ids removes the tags, output otherwise intact")
 
 
 def test_level_filters_payload(binary):
@@ -350,17 +527,18 @@ def test_level_filters_payload(binary):
 
     debug_output = relay_at("debug")
     if payload_hex not in debug_output:
-        print("---- proxy output ----\n" + debug_output + "----------------------")
-        fail("[level] the payload must be printed at --level debug")
+        fail("[level] the payload must be printed at --level debug", debug_output)
 
     info_output = relay_at("info")
     if payload_hex in info_output:
-        print("---- proxy output ----\n" + info_output + "----------------------")
-        fail("[level] the payload must be hidden at --level info")
+        fail("[level] the payload must be hidden at --level info", info_output)
     # The relay still ran, so the lifecycle lines prove the absence above is real.
     if "Listener bound to" not in info_output:
-        print("---- proxy output ----\n" + info_output + "----------------------")
-        fail("[level] --level info should still print the INFO lifecycle lines")
+        fail("[level] --level info should still print the INFO lifecycle lines", info_output)
+    # The tagged accept line is INFO too: the id->peer mapping must survive
+    # `--level info`, where the tagged payload lines are suppressed.
+    if not re.search(r"\[#\d+\] Incoming connection from", info_output):
+        fail("[level] the tagged accept line must remain visible at --level info", info_output)
 
     print("OK [level] payload shown at debug, hidden at info (lifecycle lines kept)")
 
@@ -403,8 +581,9 @@ def test_unreachable_remote(binary):
         output = stop_proxy(proxy)
 
     if "panic" in output.lower():
-        print("---- proxy output ----\n" + output + "----------------------")
-        fail("[unreachable-remote] proxy panicked instead of handling the error gracefully")
+        fail("[unreachable-remote] proxy panicked instead of handling the error gracefully",
+             output)
+    assert_tagged_connect_failure(output, "unreachable-remote")
     print("OK [unreachable-remote] failure logged, client closed, proxy still serving")
 
 
@@ -435,8 +614,7 @@ def test_bind_failure(binary):
     if completed.returncode == 0:
         fail("[bind-failure] expected a non-zero exit when the bind address is in use")
     if "panic" in completed.stdout.lower():
-        print("---- proxy output ----\n" + completed.stdout + "----------------------")
-        fail("[bind-failure] proxy panicked instead of exiting cleanly")
+        fail("[bind-failure] proxy panicked instead of exiting cleanly", completed.stdout)
     print("OK [bind-failure] exited non-zero (rc=%d) with a clean error" % completed.returncode)
 
 
@@ -476,8 +654,8 @@ def test_ctrl_c(binary):
             proxy.kill()
 
     if proxy.returncode != 0:
-        print("---- proxy output ----\n" + output + "----------------------")
-        fail("[ctrl-c] expected a clean exit (0) after SIGINT, got rc=%s" % proxy.returncode)
+        fail("[ctrl-c] expected a clean exit (0) after SIGINT, got rc=%s" % proxy.returncode,
+             output)
     print("OK [ctrl-c] proxy shut down cleanly on SIGINT (rc=0)")
 
 
@@ -519,8 +697,7 @@ def test_http(binary):
         output = stop_proxy(proxy)
 
     if "panic" in output.lower():
-        print("---- proxy output ----\n" + output + "----------------------")
-        fail("[http] proxy panicked while relaying HTTP")
+        fail("[http] proxy panicked while relaying HTTP", output)
     print("OK [http] real HTTP request relayed through the proxy")
 
 
@@ -602,8 +779,7 @@ def test_modbus(binary):
     # The proxy should have logged the raw request frame in hex (its whole purpose).
     request_hex = ":".join("%02x" % b for b in request)
     if request_hex not in output:
-        print("---- proxy output ----\n" + output + "----------------------")
-        fail("[modbus] proxy did not log the MODBUS request frame %s" % request_hex)
+        fail("[modbus] proxy did not log the MODBUS request frame %s" % request_hex, output)
     print("OK [modbus] real MODBUS read-holding-registers relayed and logged")
 
 
@@ -640,8 +816,7 @@ def test_threads(binary):
         output = stop_proxy(proxy)
         echo_server.close()
     if "panic" in output.lower():
-        print("---- proxy output ----\n" + output + "----------------------")
-        fail("[threads] proxy panicked with a custom thread count")
+        fail("[threads] proxy panicked with a custom thread count", output)
 
     # An out-of-range count (0) must be rejected by clap with a non-zero exit.
     completed = subprocess.run(
@@ -660,8 +835,7 @@ def test_threads(binary):
     if completed.returncode == 0:
         fail("[threads] expected a non-zero exit for --threads 0")
     if "panic" in completed.stdout.lower():
-        print("---- proxy output ----\n" + completed.stdout + "----------------------")
-        fail("[threads] proxy panicked instead of rejecting --threads 0")
+        fail("[threads] proxy panicked instead of rejecting --threads 0", completed.stdout)
     print("OK [threads] custom thread count relays and 0 is rejected")
 
 
@@ -702,17 +876,16 @@ def test_hostname_remote(binary):
         echo_server.close()
 
     if "panic" in output.lower():
-        print("---- proxy output ----\n" + output + "----------------------")
-        fail("[hostname] proxy panicked relaying through a hostname remote")
+        fail("[hostname] proxy panicked relaying through a hostname remote", output)
     # The payload must still be logged (lowerhex default), proving the relay ran.
     expected = ":".join("%02x" % b for b in payload)
     if expected not in output:
-        print("---- proxy output ----\n" + output + "----------------------")
-        fail("[hostname] payload not logged through a hostname remote")
-    # And the resolved-peer INFO line names the hostname target it reached.
-    if ("Connected to destination localhost:%d" % echo_port) not in output:
-        print("---- proxy output ----\n" + output + "----------------------")
-        fail("[hostname] proxy did not log the resolved destination for a hostname remote")
+        fail("[hostname] payload not logged through a hostname remote", output)
+    # And the resolved-peer INFO line names the hostname target it reached, tagged
+    # with the connection's id.
+    if not re.search(r"\[#\d+\] Connected to destination localhost:%d\b" % echo_port, output):
+        fail("[hostname] proxy did not log the tagged resolved destination for a hostname remote",
+             output)
     print("OK [hostname] relayed through localhost:%d (DNS-resolved) and logged it" % echo_port)
 
 
@@ -755,8 +928,8 @@ def test_unresolvable_remote(binary):
         output = stop_proxy(proxy)
 
     if "panic" in output.lower():
-        print("---- proxy output ----\n" + output + "----------------------")
-        fail("[unresolvable-remote] proxy panicked instead of handling the DNS failure")
+        fail("[unresolvable-remote] proxy panicked instead of handling the DNS failure", output)
+    assert_tagged_connect_failure(output, "unresolvable-remote")
     print("OK [unresolvable-remote] DNS failure logged, client closed, proxy still serving")
 
 
@@ -772,6 +945,8 @@ def main():
     run_case(binary, "octal", ":", lambda b: "%03o" % b)
     run_case(binary, "binary", ":", lambda b: format(b, "08b"))
     test_direction_markers_and_no_double_logging(binary)
+    test_connection_id_tags(binary)
+    test_no_connection_ids_flag(binary)
     test_level_filters_payload(binary)
     test_hostname_remote(binary)
     test_http(binary)
