@@ -42,9 +42,15 @@ pub(super) fn install_capturing_logger() {
 /// Strip a leading `[#N] ` connection-id tag from a captured line, returning the
 /// bare message. A line without the tag (a listener-level line, or any line with
 /// `--no-connection-ids`) is returned unchanged.
+///
+/// The delimiters come from `conn` rather than being re-spelled here, so a change
+/// to the tag's shape cannot leave this parser silently matching nothing — which
+/// would surface as an unrelated-looking failure in the tests that consume it.
+/// (Assertions on the tag deliberately keep their literals: those pin the output
+/// contract and must not be derived from the code under test.)
 fn strip_conn_tag(line: &str) -> &str {
-    line.strip_prefix("[#")
-        .and_then(|rest| rest.split_once("] "))
+    line.strip_prefix(crate::conn::CONN_TAG_OPEN)
+        .and_then(|rest| rest.split_once(crate::conn::CONN_TAG_CLOSE))
         .filter(|(id, _)| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()))
         .map_or(line, |(_, message)| message)
 }

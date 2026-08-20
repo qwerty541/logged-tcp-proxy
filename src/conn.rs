@@ -7,6 +7,7 @@ use logged_stream::DefaultFilter;
 use logged_stream::LoggedStream;
 use logged_stream::RecordKind;
 use logged_stream::RecordKindFilter;
+use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
@@ -91,10 +92,10 @@ pub(crate) async fn run_accept_loop(listener: tokio_net::TcpListener, arguments:
                 accept_backoff = ACCEPT_BACKOFF_MIN; // recovered -> reset the backoff
                 let conn_id = next_conn_id;
                 next_conn_id += 1;
-                let log_prefix = connection_log_prefix(&arguments, conn_id);
-                log::info!("{log_prefix}Incoming connection from {addr}");
+                let conn_log = ConnLog::new(&arguments, conn_id);
+                conn_log.info(format_args!("Incoming connection from {addr}"));
                 tokio::spawn(async move {
-                    incoming_connection_handle(cloned_arguments, stream, log_prefix, addr).await;
+                    incoming_connection_handle(cloned_arguments, stream, conn_log, addr).await;
                     drop(permit); // release the slot once the connection is done
                 });
             }
@@ -127,39 +128,104 @@ async fn connect_to_target(target: &TargetAddr) -> io::Result<tokio_net::TcpStre
     }
 }
 
-/// The tag prepended to every console line belonging to connection `conn_id` —
-/// `"[#N] "` (trailing space included, since [`ConsoleLogger`] renders the prefix
-/// verbatim with no separator of its own) — or an empty string when
-/// `--no-connection-ids` disabled the tags. An empty prefix renders byte-for-byte
-/// like no prefix at all, so the disabled path reproduces the untagged output
-/// exactly through the same code.
-fn connection_log_prefix(arguments: &Arguments, conn_id: u64) -> String {
-    if arguments.connection_ids {
-        format!("[#{conn_id}] ")
-    } else {
-        String::new()
+/// Opening delimiter of a connection's `[#N] ` console tag.
+///
+/// The tag's grammar lives here rather than being spelled out at each site that
+/// produces or parses it, so a change to the shape cannot leave a parser quietly
+/// matching nothing (see `strip_conn_tag` in [`log_capture`](crate::tests::log_capture)).
+pub(crate) const CONN_TAG_OPEN: &str = "[#";
+/// Closing delimiter of a connection's `[#N] ` console tag. The trailing space is
+/// part of it: [`ConsoleLogger`] renders the prefix verbatim, immediately before
+/// the record-kind character, with no separator of its own.
+pub(crate) const CONN_TAG_CLOSE: &str = "] ";
+
+/// Everything one proxied connection logs, carrying that connection's id tag.
+///
+/// The tag is `"[#N] "` (see [`CONN_TAG_OPEN`] / [`CONN_TAG_CLOSE`]), or an empty
+/// string when `--no-connection-ids` disabled the tags — an empty prefix renders
+/// byte-for-byte like no prefix at all, so the disabled path reproduces the
+/// untagged output exactly through the same code.
+///
+/// Every per-connection line goes through this type: the lifecycle lines via
+/// [`log`](Self::log) / [`trace`](Self::trace) / [`debug`](Self::debug) /
+/// [`info`](Self::info) / [`warn`](Self::warn) / [`error`](Self::error), and both
+/// `LoggedStream`s' console records via [`prefix`](Self::prefix). That is what keeps
+/// the tag from being forgotten — a new per-connection line cannot be logged without
+/// one, so the "every line of a connection is attributable" guarantee is structural
+/// rather than a convention each future call site has to remember.
+struct ConnLog {
+    prefix: String,
+}
+
+impl ConnLog {
+    /// Build the logger for connection `conn_id`, honouring `--no-connection-ids`.
+    fn new(arguments: &Arguments, conn_id: u64) -> Self {
+        Self {
+            prefix: if arguments.connection_ids {
+                format!("{CONN_TAG_OPEN}{conn_id}{CONN_TAG_CLOSE}")
+            } else {
+                String::new()
+            },
+        }
+    }
+
+    /// The connection's tag, for [`ConsoleLogger::with_prefix`].
+    fn prefix(&self) -> &str {
+        &self.prefix
+    }
+
+    /// Log a line with the connection's tag at the given level. The `message`
+    /// argument is a `format_args!`-style `fmt::Arguments` value, so the caller
+    /// can use `{}`-style formatting without allocating a `String`.
+    fn log(&self, level: log::Level, message: fmt::Arguments<'_>) {
+        log::log!(level, "{}{message}", self.prefix);
+    }
+
+    /// Log one of the connection's debug lines, tagged, at the `trace` level.
+    fn trace(&self, message: fmt::Arguments<'_>) {
+        log::trace!("{}{message}", self.prefix);
+    }
+
+    /// Log one of the connection's debug lines, tagged, at the `debug` level.
+    fn debug(&self, message: fmt::Arguments<'_>) {
+        log::debug!("{}{message}", self.prefix);
+    }
+
+    /// Log one of the connection's lifecycle lines, tagged, at the `info` level.
+    fn info(&self, message: fmt::Arguments<'_>) {
+        log::info!("{}{message}", self.prefix);
+    }
+
+    /// Log one of the connection's warning lines, tagged, at the `warn` level.
+    fn warn(&self, message: fmt::Arguments<'_>) {
+        log::warn!("{}{message}", self.prefix);
+    }
+
+    /// Log one of the connection's failure lines, tagged, at the `error` level.
+    fn error(&self, message: fmt::Arguments<'_>) {
+        log::error!("{}{message}", self.prefix);
     }
 }
 
 async fn incoming_connection_handle(
     arguments: Arguments,
     source_stream: tokio_net::TcpStream,
-    log_prefix: String,
+    conn_log: ConnLog,
     client_addr: SocketAddr,
 ) {
     let (source_stream_read_half, source_stream_write_half) = io::split(LoggedStream::new(
         source_stream,
         get_formatter_by_kind(arguments.formatting, arguments.separator.as_str()),
         DefaultFilter,
-        ConsoleLogger::new_unchecked("debug").with_prefix(log_prefix.clone()),
+        ConsoleLogger::new_unchecked("debug").with_prefix(conn_log.prefix().to_string()),
     ));
     let destination_stream = match connect_to_target(&arguments.remote_addr).await {
         Ok(stream) => stream,
         Err(error) => {
-            log::error!(
-                "{log_prefix}Failed to connect to destination {}: {error}",
+            conn_log.error(format_args!(
+                "Failed to connect to destination {}: {error}",
                 arguments.remote_addr
-            );
+            ));
             // Returning drops the source halves, closing the client connection.
             return;
         }
@@ -175,10 +241,10 @@ async fn incoming_connection_handle(
             .peer_addr()
             .map(|peer| format!(" ({peer})"))
             .unwrap_or_default();
-        log::info!(
-            "{log_prefix}Connected to destination {}{peer_suffix}",
+        conn_log.info(format_args!(
+            "Connected to destination {}{peer_suffix}",
             arguments.remote_addr
-        );
+        ));
     }
     // The destination stream carries the same `[#N] ` prefix as the source stream:
     // its Drop/Error/Shutdown records are the connection's lines too, and without
@@ -188,7 +254,7 @@ async fn incoming_connection_handle(
             destination_stream,
             get_formatter_by_kind(arguments.formatting, arguments.separator.as_str()),
             RecordKindFilter::new(&[RecordKind::Drop, RecordKind::Error, RecordKind::Shutdown]),
-            ConsoleLogger::new_unchecked("debug").with_prefix(log_prefix.clone()),
+            ConsoleLogger::new_unchecked("debug").with_prefix(conn_log.prefix().to_string()),
         ));
 
     // Relay both directions concurrently, running each to completion. As each
@@ -239,9 +305,9 @@ async fn incoming_connection_handle(
                     // The client address makes the line self-correlating even where
                     // the `[#N]` tag is absent (`--no-connection-ids`) or ambiguous
                     // (ids restart at 1 for every proxy run).
-                    log::info!(
-                        "{log_prefix}Closing idle connection from {client_addr} after {seconds}s of inactivity"
-                    );
+                    conn_log.info(format_args!(
+                        "Closing idle connection from {client_addr} after {seconds}s of inactivity"
+                    ));
                 } => {}
             }
         }

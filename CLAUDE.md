@@ -77,7 +77,7 @@ All source lives in `src/`:
     only writer, and each handler receives the value by copy, so no atomics are
     needed; ids are minted only for successful accepts), logs the peer address
     tagged `[#N]`, and spawns `incoming_connection_handle` with the connection's
-    log prefix. Concurrency is bounded by a `tokio::sync::Semaphore`
+    `ConnLog`. Concurrency is bounded by a `tokio::sync::Semaphore`
     sized to `--max-connections`: a permit is acquired *before* `accept()` (so at
     capacity the loop stops pulling from the backlog — backpressure) and held by the
     connection task until it closes. An `accept()` error is logged and retried after
@@ -85,11 +85,16 @@ All source lives in `src/`:
     a persistent failure such as file-descriptor exhaustion can't spin the loop.
     Extracted from `initialize_tcp_listener` so it can be driven by tests with a
     pre-bound (ephemeral-port) listener.
-  - `incoming_connection_handle(arguments, source_stream, log_prefix, client_addr)`
+  - `incoming_connection_handle(arguments, source_stream, conn_log, client_addr)`
     (private) — sets up the per-connection bidirectional relay (see below), tagging
-    all of the connection's log output with the `[#N] ` prefix built by
-    `connection_log_prefix` (an empty string with `--no-connection-ids`, which
-    renders byte-for-byte like no prefix at all).
+    all of the connection's log output via the `ConnLog` it is handed.
+  - `ConnLog` (private) — everything one connection logs. It owns that connection's
+    `[#N] ` tag (an empty string with `--no-connection-ids`, which renders
+    byte-for-byte like no prefix at all) and exposes `trace`/`debug`/`info`/`warn`/
+    `error` for the lifecycle lines plus `prefix()` for the two `ConsoleLogger`s. Routing every per-connection line through it is what makes the tag structural rather than a
+    convention each new call site must remember. The tag's delimiters are the
+    `CONN_TAG_OPEN` / `CONN_TAG_CLOSE` consts, which the tests' `strip_conn_tag`
+    parser also uses, so the grammar is defined in exactly one place.
   - `connect_to_target(target)` (private) — opens the destination `TcpStream` for
     one client: a `TargetAddr::Socket` is dialed directly (no DNS), a
     `TargetAddr::Named` is resolved via DNS here (once per connection, tokio trying
