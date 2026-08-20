@@ -177,16 +177,19 @@ impl ConnLog {
     /// Log a line with the connection's tag at the given level. The `message`
     /// argument is a `format_args!`-style `fmt::Arguments` value, so the caller
     /// can use `{}`-style formatting without allocating a `String`.
+    #[allow(dead_code)]
     fn log(&self, level: log::Level, message: fmt::Arguments<'_>) {
         log::log!(level, "{}{message}", self.prefix);
     }
 
     /// Log one of the connection's debug lines, tagged, at the `trace` level.
+    #[allow(dead_code)]
     fn trace(&self, message: fmt::Arguments<'_>) {
         log::trace!("{}{message}", self.prefix);
     }
 
     /// Log one of the connection's debug lines, tagged, at the `debug` level.
+    #[allow(dead_code)]
     fn debug(&self, message: fmt::Arguments<'_>) {
         log::debug!("{}{message}", self.prefix);
     }
@@ -197,6 +200,7 @@ impl ConnLog {
     }
 
     /// Log one of the connection's warning lines, tagged, at the `warn` level.
+    #[allow(dead_code)]
     fn warn(&self, message: fmt::Arguments<'_>) {
         log::warn!("{}{message}", self.prefix);
     }
