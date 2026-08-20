@@ -185,29 +185,29 @@ impl ConnLog {
     /// Log one of the connection's debug lines, tagged, at the `trace` level.
     #[allow(dead_code)]
     fn trace(&self, message: fmt::Arguments<'_>) {
-        log::trace!("{}{message}", self.prefix);
+        self.log(log::Level::Trace, message);
     }
 
     /// Log one of the connection's debug lines, tagged, at the `debug` level.
     #[allow(dead_code)]
     fn debug(&self, message: fmt::Arguments<'_>) {
-        log::debug!("{}{message}", self.prefix);
+        self.log(log::Level::Debug, message);
     }
 
     /// Log one of the connection's lifecycle lines, tagged, at the `info` level.
     fn info(&self, message: fmt::Arguments<'_>) {
-        log::info!("{}{message}", self.prefix);
+        self.log(log::Level::Info, message);
     }
 
     /// Log one of the connection's warning lines, tagged, at the `warn` level.
     #[allow(dead_code)]
     fn warn(&self, message: fmt::Arguments<'_>) {
-        log::warn!("{}{message}", self.prefix);
+        self.log(log::Level::Warn, message);
     }
 
     /// Log one of the connection's failure lines, tagged, at the `error` level.
     fn error(&self, message: fmt::Arguments<'_>) {
-        log::error!("{}{message}", self.prefix);
+        self.log(log::Level::Error, message);
     }
 }
 
