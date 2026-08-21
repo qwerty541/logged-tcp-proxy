@@ -48,6 +48,9 @@ pub(super) fn test_arguments(
         formatting: PayloadFormattingKind::LowerHex,
         separator: ":".to_string(),
         precision: TimestampPrecision::Seconds,
+        // The default: console lines are tagged with per-connection `[#N]` ids.
+        // The `conn_ids` submodule flips this locally to cover the opt-out.
+        connection_ids: true,
     }
 }
 
@@ -156,14 +159,25 @@ async fn spawn_proxy_full(
     timeout: Option<u64>,
     max_connections: u32,
 ) -> SocketAddr {
+    spawn_proxy_configured(remote_addr, timeout, max_connections, |_| {}).await
+}
+
+/// The core spawner every `spawn_proxy*` variant delegates to: binds an
+/// ephemeral-port listener, builds the [`Arguments`] (applying `edit` last, so a
+/// caller can override any field), and starts the accept loop in the background.
+pub(super) async fn spawn_proxy_configured(
+    remote_addr: SocketAddr,
+    timeout: Option<u64>,
+    max_connections: u32,
+    edit: impl FnOnce(&mut Arguments),
+) -> SocketAddr {
     let listener = TcpListener::bind(LOOPBACK)
         .await
         .expect("failed to bind proxy");
     let addr = listener.local_addr().expect("proxy local_addr");
-    tokio::spawn(run_accept_loop(
-        listener,
-        test_arguments(addr, remote_addr, timeout, max_connections),
-    ));
+    let mut arguments = test_arguments(addr, remote_addr, timeout, max_connections);
+    edit(&mut arguments);
+    tokio::spawn(run_accept_loop(listener, arguments));
     addr
 }
 
@@ -171,15 +185,14 @@ async fn spawn_proxy_full(
 /// the proxy at a `hostname:port` (resolved at connect time) instead of a literal
 /// address. Reuses the same ephemeral-port + auto-cleanup setup as the others.
 pub(super) async fn spawn_proxy_with_target(remote: TargetAddr) -> SocketAddr {
-    let listener = TcpListener::bind(LOOPBACK)
-        .await
-        .expect("failed to bind proxy");
-    let addr = listener.local_addr().expect("proxy local_addr");
-    let mut arguments =
-        test_arguments(addr, addr, Some(IO_TIMEOUT.as_secs()), TEST_MAX_CONNECTIONS);
-    arguments.remote_addr = remote;
-    tokio::spawn(run_accept_loop(listener, arguments));
-    addr
+    let placeholder: SocketAddr = LOOPBACK.parse().expect("LOOPBACK parses");
+    spawn_proxy_configured(
+        placeholder,
+        Some(IO_TIMEOUT.as_secs()),
+        TEST_MAX_CONNECTIONS,
+        |arguments| arguments.remote_addr = remote,
+    )
+    .await
 }
 
 /// Connect a client to `addr`, bounded by [`IO_TIMEOUT`].
