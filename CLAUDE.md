@@ -242,7 +242,7 @@ to its users):
 -f, --formatting <FORMATTING>                [default: lowerhex]  decimal|lowerhex|upperhex|binary|octal
 -s, --separator <STRING>                     byte separator in output [default: ":"]
 -p, --precision <PRECISION>                  [default: seconds]  seconds|milliseconds|microseconds|nanoseconds
-    --no-connection-ids                      disable the per-connection [#N] id tag on console output lines
+-n, --no-connection-ids                      disable the per-connection [#N] id tag on console output lines
 ```
 
 `--bind-listener-addr` is parsed as `std::net::SocketAddr`, so it must be a literal

@@ -98,6 +98,12 @@ fn connection_ids_default_on_with_no_connection_ids_opt_out() {
         "--no-connection-ids must disable connection ids"
     );
     assert!(
+        !parse(&["-n"])
+            .expect("the -n short flag should parse")
+            .connection_ids,
+        "-n is the short alias for --no-connection-ids",
+    );
+    assert!(
         parse(&["--no-connection-ids", "true"]).is_err(),
         "the flag takes no value"
     );

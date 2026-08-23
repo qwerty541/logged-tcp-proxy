@@ -334,6 +334,12 @@ pub struct Arguments {
     // `ArgAction::SetFalse` names the flag after the *disabled* state while the
     // field keeps positive semantics: it defaults to `true` and the flag's
     // presence sets it to `false`.
-    #[arg(long = "no-connection-ids", action = clap::ArgAction::SetFalse)]
+    //
+    // `short = 'n'` ("no") is spelled out rather than derived: a bare `short`
+    // takes its letter from the *field* name, yielding `-c`, which reads as
+    // *enabling* the tags while doing the opposite. Naming `n` also keeps `-c`
+    // free and correctly polarised should an explicit `--connection-ids` ever
+    // be added as the positive counterpart.
+    #[arg(short = 'n', long = "no-connection-ids", action = clap::ArgAction::SetFalse)]
     pub connection_ids: bool,
 }
