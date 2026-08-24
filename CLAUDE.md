@@ -63,8 +63,22 @@ All source lives in `src/`:
   is rejected at startup. `--bind-listener-addr` stays a literal `net::SocketAddr`.
 
   The `connection_ids` field is a positively-named `bool` behind the opt-out
-  `--no-connection-ids` flag (`ArgAction::SetFalse`, default `true`): it controls
-  the per-connection `[#N]` id tags on console output.
+  `-n` / `--no-connection-ids` flag (`ArgAction::SetFalse`, default `true`): it
+  controls the per-connection `[#N]` id tags on console output. The short letter
+  is written out as `short = 'n'` rather than derived, because a bare `short`
+  takes its letter from the *field* name and would yield `-c` — a flag that reads
+  as *enabling* the tags while doing the opposite. Spelling it `n` also leaves
+  `-c` free, and pointing the right way, for an explicit `--connection-ids`
+  positive counterpart should one ever be added.
+
+  Note the comment convention in this file: a `///` doc comment on a field becomes
+  that option's `--help` text (clap renders it verbatim, minus a trailing period),
+  while a `//` comment is a maintainer-only note that never reaches the CLI. Keep
+  implementation rationale in `//` — promoting it to `///` leaks internals such as
+  `ArgAction::SetFalse` into user-facing help. Where a field carries both, a bare
+  `//` line separates them — see `threads` and `connection_ids`, the two fields
+  whose letter choice needed explaining — so the switch from help text to
+  maintainer note is obvious at a glance instead of reading like a dropped slash.
 - [`src/conn.rs`](src/conn.rs) — the networking core:
   - `initialize_tcp_listener(arguments)` (`pub`, returns `io::Result<()>`) — binds
     the `TcpListener` (returning `Err` on a bind failure instead of panicking),
