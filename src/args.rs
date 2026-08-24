@@ -317,6 +317,7 @@ pub struct Arguments {
     pub max_connections: u32,
     /// Number of worker threads used by the async runtime. Raise it to handle more
     /// concurrent traffic on multi-core machines.
+    //
     // `short = 'w'` ("worker"): the natural `-t` is already taken by `--timeout`.
     #[arg(short = 'w', long, default_value = "4", value_parser = clap::value_parser!(u32).range(1..=MAX_THREADS))]
     pub threads: u32,
@@ -331,9 +332,9 @@ pub struct Arguments {
     pub precision: TimestampPrecision,
     /// Disable the per-connection id tag (`[#N]`) on console output lines, e.g.
     /// when only a single connection is proxied and the tags add nothing.
-    // `ArgAction::SetFalse` names the flag after the *disabled* state while the
-    // field keeps positive semantics: it defaults to `true` and the flag's
-    // presence sets it to `false`.
-    #[arg(long = "no-connection-ids", action = clap::ArgAction::SetFalse)]
+    //
+    // `short = 'n'` ("no") is spelled out: a bare `short` derives its letter from
+    // the *field* name, yielding `-c`, which reads as *enabling* the tags.
+    #[arg(short = 'n', long = "no-connection-ids", action = clap::ArgAction::SetFalse)]
     pub connection_ids: bool,
 }
