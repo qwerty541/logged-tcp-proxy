@@ -109,6 +109,63 @@ fn connection_ids_default_on_with_no_connection_ids_opt_out() {
     );
 }
 
+/// Every option's short flag, pinned to the letter it has always had.
+///
+/// The letters are written out in [`Arguments`] rather than derived, because a bare
+/// `#[arg(short)]` takes its letter from the *field* name: renaming a field would
+/// silently move a public flag (the long name can be pinned separately, so `--help`
+/// need not even look different), or collide with another option. clap enforces
+/// uniqueness only through a debug assertion, so a collision panics under
+/// `cargo test` but a release build — which is what `cargo install` produces —
+/// happily ships two options sharing a letter. This test is what fails if a letter
+/// is changed, dropped or duplicated.
+#[test]
+fn short_flags_are_pinned_and_unique() {
+    use clap::CommandFactory;
+
+    let command = Arguments::command();
+    let mut actual: Vec<(char, String)> = command
+        .get_arguments()
+        .filter_map(|argument| Some((argument.get_short()?, argument.get_long()?.to_string())))
+        .collect();
+    actual.sort();
+
+    // Only the options this crate declares: clap injects its own `-h` / `-V` later,
+    // when the `Command` is built, so they are deliberately not listed here.
+    let expected: Vec<(char, String)> = [
+        ('b', "bind-listener-addr"),
+        ('f', "formatting"),
+        ('l', "level"),
+        ('m', "max-connections"),
+        ('n', "no-connection-ids"),
+        ('p', "precision"),
+        ('r', "remote-addr"),
+        ('s', "separator"),
+        ('t', "timeout"),
+        ('w', "threads"),
+    ]
+    .into_iter()
+    .map(|(short, long)| (short, long.to_string()))
+    .collect();
+
+    assert_eq!(
+        actual, expected,
+        "the short flag of every option is part of the public CLI: update this list \
+         only when the change is intended and documented"
+    );
+
+    // Guard the letters directly too, so a duplicate cannot be waved through by
+    // being added to `expected` as well.
+    let mut letters: Vec<char> = actual.iter().map(|(short, _)| *short).collect();
+    let total = letters.len();
+    letters.dedup();
+    assert_eq!(
+        letters.len(),
+        total,
+        "short flags must be unique; clap only catches duplicates in debug builds"
+    );
+}
+
 /// The CLI value enums must expose exactly the value names the proxy has always
 /// accepted. These names used to come from hand-written `ValueEnum`/`FromStr`/
 /// `Display` impls and are now derived (`#[derive(ValueEnum)]` plus the
