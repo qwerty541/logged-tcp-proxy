@@ -119,6 +119,11 @@ fn connection_ids_default_on_with_no_connection_ids_opt_out() {
 /// `cargo test` but a release build — which is what `cargo install` produces —
 /// happily ships two options sharing a letter. This test is what fails if a letter
 /// is changed, dropped or duplicated.
+///
+/// Every option is required to carry *both* forms, rather than only those that
+/// happen to have a short being collected: skipping an option that lacks one would
+/// let a new long-only (or short-only) option slip in silently, which would make
+/// this test's promise — that the letter map below is the whole of it — untrue.
 #[test]
 fn short_flags_are_pinned_and_unique() {
     use clap::CommandFactory;
@@ -126,7 +131,21 @@ fn short_flags_are_pinned_and_unique() {
     let command = Arguments::command();
     let mut actual: Vec<(char, String)> = command
         .get_arguments()
-        .filter_map(|argument| Some((argument.get_short()?, argument.get_long()?.to_string())))
+        // The crate declares no positionals, and those carry neither form; skipping
+        // them keeps this test about options.
+        .filter(|argument| !argument.is_positional())
+        .map(|argument| {
+            let id = argument.get_id();
+            let short = argument.get_short().unwrap_or_else(|| {
+                panic!("option `{id}` has no short flag: every option in this CLI carries one")
+            });
+            let long = argument.get_long().unwrap_or_else(|| {
+                panic!(
+                    "option `-{short}` ({id}) has no long name: this CLI uses no short-only flags"
+                )
+            });
+            (short, long.to_string())
+        })
         .collect();
     actual.sort();
 
