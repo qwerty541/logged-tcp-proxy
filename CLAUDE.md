@@ -71,6 +71,17 @@ All source lives in `src/`:
   `-c` free, and pointing the right way, for an explicit `--connection-ids`
   positive counterpart should one ever be added.
 
+  Every option's short flag is written out (`short = 'l'`, never a bare `short`).
+  A bare `short` takes its letter from the *field* name, so renaming a field would
+  silently move a public flag — the long name can be pinned separately, so even
+  `--help` need not look different — or collide with another option. clap enforces
+  uniqueness only through a debug assertion, so a collision panics under `cargo
+  test` but a release build, which is what `cargo install` produces, ships two
+  options sharing a letter. The `short_flags_are_pinned_and_unique` test in
+  [`src/tests/cli_args.rs`](src/tests/cli_args.rs) pins the whole letter map, so
+  none of this can drift unnoticed. (Field *order* is irrelevant — clap derives
+  nothing from it.)
+
   Note the comment convention in this file: a `///` doc comment on a field becomes
   that option's `--help` text (clap renders it verbatim, minus a trailing period),
   while a `//` comment is a maintainer-only note that never reaches the CLI. Keep
