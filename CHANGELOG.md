@@ -24,6 +24,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed grammar in the user-facing CLI help text and crate description: corrected "binded" to "bound" in the `--bind-listener-addr` help, dropped a stray trailing comma from the `--formatting` help, and reworded the summary line (the `about`/`--help` header, also shown as the crates.io description) for clarity. The README `--help` block and installation prose were updated to match.
 - Reformatted the README Options section from a raw `--help` dump into a scannable table (option, description, default, possible values), which also surfaces the accepted numeric ranges that `--help` does not print (`--timeout` `1..=3153600000`, `--max-connections` `1..`, `--threads` `1..=1024`).
 
+### Dependencies
+
+- Updated `log` from 0.4.32 to 0.4.33
+- Updated `bytes` from 1.11.1 to 1.12.1
+- Updated `env_logger` from 0.11.10 to 0.11.11
+- Updated `clap` from 4.6.1 to 4.6.6
+- Updated `tokio` from 1.52.3 to 1.53.1
+- Updated `logged-stream` from 0.6.0 to 0.7.0
+
 ## v0.2.0 (23.06.2026)
 
 ### Added
