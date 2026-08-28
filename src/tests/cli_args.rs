@@ -98,8 +98,90 @@ fn connection_ids_default_on_with_no_connection_ids_opt_out() {
         "--no-connection-ids must disable connection ids"
     );
     assert!(
+        !parse(&["-n"])
+            .expect("the -n short flag should parse")
+            .connection_ids,
+        "-n is the short alias for --no-connection-ids",
+    );
+    assert!(
         parse(&["--no-connection-ids", "true"]).is_err(),
         "the flag takes no value"
+    );
+}
+
+/// Every option's short flag, pinned to the letter it has always had.
+///
+/// The letters are written out in [`Arguments`] rather than derived, because a bare
+/// `#[arg(short)]` takes its letter from the *field* name: renaming a field would
+/// silently move a public flag (the long name can be pinned separately, so `--help`
+/// need not even look different), or collide with another option. clap enforces
+/// uniqueness only through a debug assertion, so a collision panics under
+/// `cargo test` but a release build — which is what `cargo install` produces —
+/// happily ships two options sharing a letter. This test is what fails if a letter
+/// is changed, dropped or duplicated.
+///
+/// Every option is required to carry *both* forms, rather than only those that
+/// happen to have a short being collected: skipping an option that lacks one would
+/// let a new long-only (or short-only) option slip in silently, which would make
+/// this test's promise — that the letter map below is the whole of it — untrue.
+#[test]
+fn short_flags_are_pinned_and_unique() {
+    use clap::CommandFactory;
+
+    let command = Arguments::command();
+    let mut actual: Vec<(char, String)> = command
+        .get_arguments()
+        // The crate declares no positionals, and those carry neither form; skipping
+        // them keeps this test about options.
+        .filter(|argument| !argument.is_positional())
+        .map(|argument| {
+            let id = argument.get_id();
+            let short = argument.get_short().unwrap_or_else(|| {
+                panic!("option `{id}` has no short flag: every option in this CLI carries one")
+            });
+            let long = argument.get_long().unwrap_or_else(|| {
+                panic!(
+                    "option `-{short}` ({id}) has no long name: this CLI uses no short-only flags"
+                )
+            });
+            (short, long.to_string())
+        })
+        .collect();
+    actual.sort();
+
+    // Only the options this crate declares: clap injects its own `-h` / `-V` later,
+    // when the `Command` is built, so they are deliberately not listed here.
+    let expected: Vec<(char, String)> = [
+        ('b', "bind-listener-addr"),
+        ('f', "formatting"),
+        ('l', "level"),
+        ('m', "max-connections"),
+        ('n', "no-connection-ids"),
+        ('p', "precision"),
+        ('r', "remote-addr"),
+        ('s', "separator"),
+        ('t', "timeout"),
+        ('w', "threads"),
+    ]
+    .into_iter()
+    .map(|(short, long)| (short, long.to_string()))
+    .collect();
+
+    assert_eq!(
+        actual, expected,
+        "the short flag of every option is part of the public CLI: update this list \
+         only when the change is intended and documented"
+    );
+
+    // Guard the letters directly too, so a duplicate cannot be waved through by
+    // being added to `expected` as well.
+    let mut letters: Vec<char> = actual.iter().map(|(short, _)| *short).collect();
+    let total = letters.len();
+    letters.dedup();
+    assert_eq!(
+        letters.len(),
+        total,
+        "short flags must be unique; clap only catches duplicates in debug builds"
     );
 }
 

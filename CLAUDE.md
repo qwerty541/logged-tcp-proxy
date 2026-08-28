@@ -63,8 +63,33 @@ All source lives in `src/`:
   is rejected at startup. `--bind-listener-addr` stays a literal `net::SocketAddr`.
 
   The `connection_ids` field is a positively-named `bool` behind the opt-out
-  `--no-connection-ids` flag (`ArgAction::SetFalse`, default `true`): it controls
-  the per-connection `[#N]` id tags on console output.
+  `-n` / `--no-connection-ids` flag (`ArgAction::SetFalse`, default `true`): it
+  controls the per-connection `[#N]` id tags on console output. The short letter
+  is written out as `short = 'n'` rather than derived, because a bare `short`
+  takes its letter from the *field* name and would yield `-c` — a flag that reads
+  as *enabling* the tags while doing the opposite. Spelling it `n` also leaves
+  `-c` free, and pointing the right way, for an explicit `--connection-ids`
+  positive counterpart should one ever be added.
+
+  Every option's short flag is written out (`short = 'l'`, never a bare `short`).
+  A bare `short` takes its letter from the *field* name, so renaming a field would
+  silently move a public flag — the long name can be pinned separately, so even
+  `--help` need not look different — or collide with another option. clap enforces
+  uniqueness only through a debug assertion, so a collision panics under `cargo
+  test` but a release build, which is what `cargo install` produces, ships two
+  options sharing a letter. The `short_flags_are_pinned_and_unique` test in
+  [`src/tests/cli_args.rs`](src/tests/cli_args.rs) pins the whole letter map, so
+  none of this can drift unnoticed. (Field *order* is irrelevant — clap derives
+  nothing from it.)
+
+  Note the comment convention in this file: a `///` doc comment on a field becomes
+  that option's `--help` text (clap renders it verbatim, minus a trailing period),
+  while a `//` comment is a maintainer-only note that never reaches the CLI. Keep
+  implementation rationale in `//` — promoting it to `///` leaks internals such as
+  `ArgAction::SetFalse` into user-facing help. Where a field carries both, a bare
+  `//` line separates them — see `threads` and `connection_ids`, the two fields
+  whose letter choice needed explaining — so the switch from help text to
+  maintainer note is obvious at a glance instead of reading like a dropped slash.
 - [`src/conn.rs`](src/conn.rs) — the networking core:
   - `initialize_tcp_listener(arguments)` (`pub`, returns `io::Result<()>`) — binds
     the `TcpListener` (returning `Err` on a bind failure instead of panicking),
@@ -242,7 +267,7 @@ to its users):
 -f, --formatting <FORMATTING>                [default: lowerhex]  decimal|lowerhex|upperhex|binary|octal
 -s, --separator <STRING>                     byte separator in output [default: ":"]
 -p, --precision <PRECISION>                  [default: seconds]  seconds|milliseconds|microseconds|nanoseconds
-    --no-connection-ids                      disable the per-connection [#N] id tag on console output lines
+-n, --no-connection-ids                      disable the per-connection [#N] id tag on console output lines
 ```
 
 `--bind-listener-addr` is parsed as `std::net::SocketAddr`, so it must be a literal

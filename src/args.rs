@@ -297,43 +297,44 @@ Source: https://github.com/qwerty541/logged-tcp-proxy
 )]
 pub struct Arguments {
     /// Application logging level.
-    #[arg(short, long, default_value = "debug")]
+    #[arg(short = 'l', long, default_value = "debug")]
     pub level: LoggingLevel,
     /// Address on which the TCP listener should be bound.
-    #[arg(short, long)]
+    #[arg(short = 'b', long)]
     pub bind_listener_addr: net::SocketAddr,
     /// Address of remote server, as `IP:port` or `hostname:port` (a hostname is
     /// resolved via DNS when each connection is opened).
-    #[arg(short, long, value_parser = parse_remote_addr)]
+    #[arg(short = 'r', long, value_parser = parse_remote_addr)]
     pub remote_addr: TargetAddr,
     /// Idle timeout for the connection, in seconds: the connection is closed once
     /// both directions have been silent for this long. If omitted, the proxy waits
     /// indefinitely (until a peer closes the connection or Ctrl-C).
-    #[arg(short, long, value_parser = clap::value_parser!(u64).range(1..=MAX_TIMEOUT_SECONDS))]
+    #[arg(short = 't', long, value_parser = clap::value_parser!(u64).range(1..=MAX_TIMEOUT_SECONDS))]
     pub timeout: Option<u64>,
     /// Maximum number of connections processed concurrently. Once this many are
     /// active, further incoming connections wait until a slot frees.
-    #[arg(short, long, default_value = "512", value_parser = clap::value_parser!(u32).range(1..))]
+    #[arg(short = 'm', long, default_value = "512", value_parser = clap::value_parser!(u32).range(1..))]
     pub max_connections: u32,
     /// Number of worker threads used by the async runtime. Raise it to handle more
     /// concurrent traffic on multi-core machines.
+    //
     // `short = 'w'` ("worker"): the natural `-t` is already taken by `--timeout`.
     #[arg(short = 'w', long, default_value = "4", value_parser = clap::value_parser!(u32).range(1..=MAX_THREADS))]
     pub threads: u32,
     /// Formatting of console payload output.
-    #[arg(short, long, default_value = "lowerhex")]
+    #[arg(short = 'f', long, default_value = "lowerhex")]
     pub formatting: PayloadFormattingKind,
     /// Console payload output bytes separator.
-    #[arg(short, long, default_value = ":")]
+    #[arg(short = 's', long, default_value = ":")]
     pub separator: String,
     /// Timestamp precision.
-    #[arg(short, long, default_value = "seconds")]
+    #[arg(short = 'p', long, default_value = "seconds")]
     pub precision: TimestampPrecision,
     /// Disable the per-connection id tag (`[#N]`) on console output lines, e.g.
     /// when only a single connection is proxied and the tags add nothing.
-    // `ArgAction::SetFalse` names the flag after the *disabled* state while the
-    // field keeps positive semantics: it defaults to `true` and the flag's
-    // presence sets it to `false`.
-    #[arg(long = "no-connection-ids", action = clap::ArgAction::SetFalse)]
+    //
+    // `short = 'n'` ("no") is spelled out: a bare `short` derives its letter from
+    // the *field* name, yielding `-c`, which reads as *enabling* the tags.
+    #[arg(short = 'n', long = "no-connection-ids", action = clap::ArgAction::SetFalse)]
     pub connection_ids: bool,
 }

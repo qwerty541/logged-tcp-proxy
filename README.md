@@ -159,7 +159,7 @@ Below are the supported command-line options. The general form is
 | `-f, --formatting` | Console payload output format | `lowerhex` | `decimal`, `lowerhex`, `upperhex`, `binary`, `octal` |
 | `-s, --separator` | Byte separator in the console payload output | `:` | any string |
 | `-p, --precision` | Timestamp precision | `seconds` | `seconds`, `milliseconds`, `microseconds`, `nanoseconds` |
-| `--no-connection-ids` | Disable the per-connection id tag (`[#N]`) on console output lines, e.g. when only a single connection is proxied and the tags add nothing | _(ids enabled)_ | _(flag, takes no value)_ |
+| `-n, --no-connection-ids` | Disable the per-connection id tag (`[#N]`) on console output lines, e.g. when only a single connection is proxied and the tags add nothing | _(ids enabled)_ | _(flag, takes no value)_ |
 
 Run `logged_tcp_proxy --help` for the canonical usage output (it also lists `-h, --help` and `-V, --version`).
 
