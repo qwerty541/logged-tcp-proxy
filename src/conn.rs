@@ -177,7 +177,6 @@ impl ConnLog {
     /// Log a line with the connection's tag at the given level. The `message`
     /// argument is a `format_args!`-style `fmt::Arguments` value, so the caller
     /// can use `{}`-style formatting without allocating a `String`.
-    #[allow(dead_code)]
     fn log(&self, level: log::Level, message: fmt::Arguments<'_>) {
         log::log!(level, "{}{message}", self.prefix);
     }
