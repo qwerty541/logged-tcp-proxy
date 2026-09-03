@@ -50,8 +50,15 @@ jobs:
           components: clippy
           toolchain: ${{ matrix.rust }}
 
+      # `--all-targets` is load-bearing, not decoration: without it clippy checks
+      # only the bin target, which is compiled without `cfg(test)` — so the whole
+      # `src/tests/` module tree (the majority of the crate's lines) would never be
+      # seen by the one job that denies warnings. It is also what makes the
+      # "an unused `pub(super)` helper is a `dead_code` error" rule this repo relies
+      # on to flag orphaned test helpers actually hold in CI. Matches the command
+      # CONTRIBUTING.md tells contributors to run before submitting.
       - name: Run clippy
-        run: cargo clippy --all-features -- -D warnings
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
   fmt:
     name: Formatting
