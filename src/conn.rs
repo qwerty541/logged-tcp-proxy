@@ -132,7 +132,13 @@ async fn connect_to_target(target: &TargetAddr) -> io::Result<tokio_net::TcpStre
 ///
 /// The tag's grammar lives here rather than being spelled out at each site that
 /// produces or parses it, so a change to the shape cannot leave a parser quietly
-/// matching nothing (see `strip_conn_tag` in [`log_capture`](crate::tests::log_capture)).
+/// matching nothing (see `strip_conn_tag` in `crate::tests::log_capture`).
+//
+// The reference to `log_capture` above is plain code text, not an intra-doc link:
+// `mod tests` is `#[cfg(test)]`-gated (main.rs), so rustdoc — which documents the
+// crate without `cfg(test)` — can never resolve a path into it, and a link form
+// would be a permanent `broken_intra_doc_links` warning. The `docs` CI job builds
+// the docs with `-D warnings`, so that class of rot now fails the build.
 pub(crate) const CONN_TAG_OPEN: &str = "[#";
 /// Closing delimiter of a connection's `[#N] ` console tag. The trailing space is
 /// part of it: [`ConsoleLogger`] renders the prefix verbatim, immediately before
@@ -177,7 +183,6 @@ impl ConnLog {
     /// Log a line with the connection's tag at the given level. The `message`
     /// argument is a `format_args!`-style `fmt::Arguments` value, so the caller
     /// can use `{}`-style formatting without allocating a `String`.
-    #[allow(dead_code)]
     fn log(&self, level: log::Level, message: fmt::Arguments<'_>) {
         log::log!(level, "{}{message}", self.prefix);
     }
