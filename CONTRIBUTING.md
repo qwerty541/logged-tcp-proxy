@@ -92,7 +92,8 @@ cargo run -- \
 ### Linting & Formatting
 
 - Formatting: `cargo fmt --all`
-- Linting: `cargo clippy --all-targets --all-features -- -D warnings`
+- Linting: `cargo clippy --all-targets --all-features -- -D warnings` (this is the
+  command CI runs; `--all-targets` is what lints the in-crate `src/tests/` tree)
 
 ### Testing
 

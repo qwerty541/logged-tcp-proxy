@@ -283,7 +283,7 @@ These are the same commands CI runs, so they reproduce locally identically:
 ```sh
 cargo build --all-targets                 # build bin + tests
 cargo test                                # run the in-crate integration tests
-cargo clippy --all-features -- -D warnings
+cargo clippy --all-targets --all-features -- -D warnings   # --all-targets also lints src/tests
 cargo fmt --check                         # rustfmt.toml: imports_granularity="Item", use_field_init_shorthand=true
 cargo msrv find                           # verify MSRV (requires cargo-msrv)
 ```
@@ -344,7 +344,10 @@ Conventions that keep the tree tidy:
 - Anything shared across submodules goes in `helpers` (or `log_capture`) and is
   exported `pub(super)`. Helpers used by only one file stay private — an unused
   `pub(super)` item is a `dead_code` error under `-D warnings`, which is the
-  mechanism that flags an orphaned helper, so don't silence it with `allow`.
+  mechanism that flags an orphaned helper, so don't silence it with `allow`. This
+  tree is only reached with `--all-targets` (the bin target is compiled without
+  `cfg(test)`), so it is the CI clippy job's `--all-targets` that enforces the rule
+  — plain `cargo clippy` passes an orphaned helper silently.
 - Submodules take no `#[cfg(test)]`; the single gate on `mod tests;` in `main.rs`
   covers the whole tree. Never name a submodule `tests` (`clippy::module_inception`).
 - Tests are reported with their module path (`tests::relay::relays_payload_through_remote`),
@@ -439,7 +442,11 @@ job.
 [`.github/workflows/check.yml`](.github/workflows/check.yml) runs on push to
 `master`, on PRs, and via manual dispatch:
 
-- **clippy** — `cargo clippy --all-features -- -D warnings` on stable, beta, nightly.
+- **clippy** — `cargo clippy --all-targets --all-features -- -D warnings` on stable,
+  beta, nightly. `--all-targets` is what puts the `#[cfg(test)]` module tree under
+  the lint: without it clippy checks only the bin target, which is compiled without
+  `cfg(test)`, so nothing in [`src/tests/`](src/tests) — the majority of the crate's
+  lines — would be seen by the only job that denies warnings.
 - **fmt** — `cargo fmt --check`.
 - **build_and_test** — `cargo build --all-targets` then `cargo test` on
   ubuntu/macos/windows × stable/beta/nightly.
