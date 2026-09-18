@@ -2,3 +2,6 @@
 
 # Git worktrees created by Claude Code sessions
 /.claude/worktrees/
+
+# Python bytecode (e.g. from importing scripts/peer.py)
+__pycache__/

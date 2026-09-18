@@ -10,6 +10,9 @@ directly), this script exercises the *real compiled binary* end to end:
     AND that the proxy prints the payload to the console in the requested format
     (the whole point of the tool).
 
+It also runs the deterministic recipes of the manual-testing peers
+(``scripts/peer.py``) against the binary, so the commands they print keep working.
+
 It uses only the Python standard library (sockets + subprocess + threads), so it
 runs the same way on Linux, macOS and Windows.
 
@@ -25,7 +28,9 @@ already-built binary (e.g. a release build) without rebuilding, point it at one:
 Exits 0 if every case passes, non-zero otherwise.
 """
 
+import contextlib
 import http.server
+import io
 import os
 import platform
 import re
@@ -933,6 +938,207 @@ def test_unresolvable_remote(binary):
     print("OK [unresolvable-remote] DNS failure logged, client closed, proxy still serving")
 
 
+PEER = os.path.join(ROOT, "scripts", "peer.py")
+# The number base of each `--formatting` value, to read a logged payload back.
+FORMATTING_BASES = {"lowerhex": 16, "upperhex": 16, "decimal": 10, "octal": 8, "binary": 2}
+# A payload line: group 1 is the arrow, group 2 the rendered bytes. The proxy
+# tags its lines `[#1]` (the runner makes exactly one connection); the peers
+# tag theirs `[c:PORT]` / `[s:PORT]`.
+PROXY_PAYLOAD_LINE = r"\] \[#1\] ([<>]) (\S+)$"
+PEER_PAYLOAD_LINE = r"\] \[[cs]:\d+\] ([<>]) (\S+)"
+
+
+def load_peer():
+    """Import scripts/peer.py for its recipe table. The script's directory is
+    put on sys.path explicitly (so this also works under `python -I`), and
+    bytecode writing is turned off so the import leaves no __pycache__ behind."""
+    sys.dont_write_bytecode = True
+    scripts = os.path.dirname(os.path.abspath(__file__))
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    import peer
+    return peer
+
+
+def missing_in_order(text, needles):
+    """The first of `needles` that does not occur in `text` after the previous
+    one, or None when they all occur in order."""
+    position = 0
+    for needle in needles:
+        found = text.find(needle, position)
+        if found < 0:
+            return needle
+        position = found + len(needle)
+    return None
+
+
+def logged_bytes(output, line_pattern, arrow, base):
+    """Join the payload bytes of every `arrow` line of `output` (the separator
+    is the default `:`), to compare what different processes logged."""
+    data = bytearray()
+    for match in re.finditer(line_pattern, output, re.M):
+        if match.group(1) == arrow:
+            data += bytes(int(token, base) for token in match.group(2).split(":"))
+    return bytes(data)
+
+
+def run_peer_recipe(binary, peer, recipe):
+    """Run one `ci` recipe of scripts/peer.py for real: server, proxy and client
+    on ephemeral ports, started in that order, each waited for through its own
+    ready line (never a probe connection, so the client is the proxy's `[#1]`)."""
+    case = "peer:" + recipe["name"]
+    processes = {}
+    drains = {}
+
+    def spawn(role, argv, stdin=None):
+        processes[role] = subprocess.Popen(
+            argv,
+            cwd=ROOT,
+            stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,  # the proxy logs to stderr
+            text=True,
+        )
+        drains[role] = start_output_drain(processes[role])
+        if stdin is not None:
+            processes[role].stdin.write(stdin)
+            processes[role].stdin.close()
+
+    def output(role):
+        return "".join(drains[role][1]) if role in drains else ""
+
+    def all_output():
+        return "".join("---- %s ----\n%s" % (role, output(role)) for role in processes)
+
+    def wait_for(role, pattern):
+        deadline = time.monotonic() + START_TIMEOUT
+        while time.monotonic() < deadline:
+            match = re.search(pattern, output(role))
+            if match:
+                return match
+            time.sleep(0.05)
+        fail("[%s] the %s never printed %r" % (case, role, pattern), all_output())
+
+    try:
+        spawn("server", [sys.executable, PEER, "server", "-L", HOST + ":0", "--once"]
+              + recipe["server"])
+        server_port = int(wait_for("server", r"listening on 127\.0\.0\.1:(\d+)").group(1))
+        spawn("proxy", [binary, "-b", HOST + ":0", "-r", "%s:%d" % (HOST, server_port)]
+              + peer.PROXY_BASE + recipe["proxy"])
+        proxy_port = int(wait_for("proxy", r"Listener bound to 127\.0\.0\.1:(\d+)").group(1))
+        spawn("client", [sys.executable, PEER, "client", "-C", "%s:%d" % (HOST, proxy_port)]
+              + recipe["client"], stdin=recipe.get("stdin"))
+        for role in ("client", "server"):  # both end on their own
+            try:
+                processes[role].wait(timeout=START_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                fail("[%s] the %s did not finish" % (case, role), all_output())
+        # The proxy's teardown records trail the peers slightly: wait (bounded)
+        # for its expected lines rather than sleeping a fixed time.
+        deadline = time.monotonic() + IO_TIMEOUT
+        while time.monotonic() < deadline:
+            if missing_in_order(output("proxy"), recipe["expect"]["proxy"]) is None:
+                break
+            time.sleep(0.05)
+    finally:
+        for proc in processes.values():
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+        for thread, _ in drains.values():
+            thread.join(timeout=5)
+
+    for role in ("client", "server"):
+        if processes[role].returncode != 0 or "Traceback" in output(role):
+            fail("[%s] the %s exited with rc=%s" % (case, role, processes[role].returncode),
+                 all_output())
+    for role in ("client", "proxy", "server"):
+        missing = missing_in_order(output(role), recipe["expect"][role])
+        if missing is not None:
+            fail("[%s] the %s did not print %r (in order)" % (case, role, missing), all_output())
+        for unwanted in recipe.get("absent", {}).get(role, []):
+            if unwanted in output(role):
+                fail("[%s] the %s printed %r" % (case, role, unwanted), all_output())
+
+    # The client connected exactly once, and that connection is the proxy's #1.
+    client_port = re.search(r"\[c:(\d+)\] \* connected", output("client")).group(1)
+    if "[#1] Incoming connection from %s:%s\n" % (HOST, client_port) not in output("proxy"):
+        fail("[%s] the client (port %s) is not the proxy's [#1]" % (case, client_port),
+             all_output())
+    if "[#2]" in output("proxy"):
+        fail("[%s] the proxy saw a second connection" % case, all_output())
+
+    # Every byte the proxy logged is a byte the peers logged, and vice versa:
+    # client `<` == proxy `<` == server `<`, and the same for `>`. Joined bytes,
+    # never line counts: each process splits the stream into reads differently.
+    formatting = "lowerhex"
+    if "-f" in recipe["proxy"]:
+        formatting = recipe["proxy"][recipe["proxy"].index("-f") + 1]
+    base = FORMATTING_BASES[formatting]
+    for arrow in "<>":
+        seen = {
+            "client": logged_bytes(output("client"), PEER_PAYLOAD_LINE, arrow, base),
+            "proxy": logged_bytes(output("proxy"), PROXY_PAYLOAD_LINE, arrow, base),
+            "server": logged_bytes(output("server"), PEER_PAYLOAD_LINE, arrow, base),
+        }
+        if len(set(seen.values())) != 1:
+            fail("[%s] the `%s` bytes differ between the processes: %r" % (case, arrow, seen),
+                 all_output())
+
+    print("OK [%s] %s" % (case, recipe["about"]))
+
+
+def test_peer_recipes(binary):
+    """The manual-testing peers (scripts/peer.py) keep working against the real
+    binary. Every recipe must still parse and print, and every recipe marked
+    `ci` runs for real (see run_peer_recipe); on POSIX, Ctrl-C also stops the
+    server cleanly."""
+    peer = load_peer()
+    try:
+        peer.check_recipes()
+        with contextlib.redirect_stdout(io.StringIO()):
+            for name in [None] + [recipe["name"] for recipe in peer.RECIPES]:
+                if peer.main(["recipes"] + ([name] if name else [])) != 0:
+                    fail("[peer] `peer.py recipes %s` failed" % (name or ""))
+    except ValueError as error:
+        fail("[peer] %s" % error)
+
+    for recipe in peer.RECIPES:
+        if recipe.get("ci"):
+            run_peer_recipe(binary, peer, recipe)
+
+    if platform.system() == "Windows":
+        print("SKIP [peer:ctrl-c] SIGINT delivery is tested only on POSIX")
+        return
+    server = subprocess.Popen(
+        [sys.executable, PEER, "server", "-L", HOST + ":0"],
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    drain, lines = start_output_drain(server)
+    deadline = time.monotonic() + START_TIMEOUT
+    while time.monotonic() < deadline and "listening on" not in "".join(lines):
+        time.sleep(0.05)
+    server.send_signal(signal.SIGINT)
+    try:
+        server.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        server.kill()
+        server.wait()
+    drain.join(timeout=5)
+    output = "".join(lines)
+    if server.returncode != 0 or "Traceback" in output or "* stopped" not in output:
+        fail("[peer:ctrl-c] the server did not stop cleanly on SIGINT (rc=%s)"
+             % server.returncode, output)
+    print("OK [peer:ctrl-c] the peer server stops cleanly on SIGINT")
+
+
 def main():
     binary = binary_path()
     print("testing binary: " + binary)
@@ -955,6 +1161,7 @@ def main():
     test_unresolvable_remote(binary)
     test_bind_failure(binary)
     test_threads(binary)
+    test_peer_recipes(binary)
     test_ctrl_c(binary)
     print("integration test passed")
 
