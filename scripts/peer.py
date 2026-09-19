@@ -15,25 +15,21 @@ flags are needed:
     T2  python3 scripts/peer.py server
     T3  python3 scripts/peer.py client        # type lines; /help for more
 
-Both peers log what they do in the proxy's own shape, so the terminals can be
-read side by side: an RFC 3339 timestamp, then `<` for bytes travelling
-client -> server and `>` for server -> client (the same meaning in all three
-terminals), rendered with the same -f/-s options as the proxy. The peers also
-log what the proxy cannot show: `-` FIN sent, `=` EOF received, `x` socket
-closed (and how), `!` socket error, `*` everything else.
-
-Standard library only (Python 3.8+). The black-box test
-(scripts/integration_test.py) runs the deterministic recipes against the real
-binary in CI, so the recipes at the bottom of this file double as regression
-tests.
+Both peers log in the proxy's own shape (see LEGEND), so the three terminals
+can be read side by side. Standard library only (Python 3.8+). The black-box
+test (scripts/integration_test.py) runs the deterministic scenarios of the
+RECIPES table below against the real binary in CI, so they double as
+regression tests.
 """
 
 import argparse
+import math
 import os
 import queue
 import re
 import select
 import shlex
+import signal
 import socket
 import struct
 import sys
@@ -55,32 +51,44 @@ FORMATS = {
     "upperhex": lambda b: "%02X" % b,
     "decimal": lambda b: "%d" % b,
     "octal": lambda b: "%03o" % b,
-    "binary": lambda b: "%08b" % b,
+    "binary": lambda b: format(b, "08b"),
 }
 # Fractional-second digits for each proxy --precision value.
 PRECISIONS = {"seconds": 0, "milliseconds": 3, "microseconds": 6, "nanoseconds": 9}
 PREVIEW_LIMIT = 64  # bytes shown in the quoted text preview after the payload
 POLL = 0.2  # seconds; every wait polls at this rate so Ctrl-C stays responsive
+# Longest accepted duration: anything longer is a typo (and it stays below the
+# ~49.7-day limit of time.sleep on Windows before Python 3.11).
+MAX_WAIT = 30 * 86400.0
 
-STEPS_HELP = r"""steps (client arguments, server --on-accept/--on-eof, /STEP in the interactive client):
+LEGEND = """output: [<time> <role>] [<connection>] <kind> <details>
+  <  bytes travelling client -> server     >  bytes travelling server -> client
+     (the proxy's meaning, in every terminal; rendered like the proxy's -f/-s)
+  -  FIN sent     =  EOF received (the other side sent FIN)     x  socket closed
+  !  an error (of the socket, or a refused command)     *  anything else
+  [c:PORT]: PORT is the one in the proxy's "Incoming connection from" line."""
+
+STEPS_HELP = r"""steps (client arguments, server --on-accept/--on-eof, most as interactive /STEP):
   TEXT       send text; escapes \n \r \t \0 \\ \xNN (no newline is added)
   t:TEXT     send text that would otherwise read as a step (t:read, t:http://x)
   x:HEX      send raw bytes: x:00:01:6f:ff (':', ' ', '-' and ',' are ignored)
   sleep:S    pause S seconds (fractions allowed)
-  read       wait for the next chunk from the other side
-  read:N     wait until at least N more bytes have arrived
+  read       wait for data from the other side (takes all that has arrived)
   shut       half-close: send FIN, keep reading
-  hold       send nothing more; wait until the other side closes
+  hold       wait until the other side has sent FIN
   close      graceful end: FIN, wait for the other side's FIN, then close
              (what happens anyway after the last step)
-  abort      close now without waiting; data still arriving makes the kernel
-             answer with RST
   rst        reset: SO_LINGER 0, then close - always sends RST
   loop       repeat all steps; must be last and needs a sleep: or read step.
              Stops once the other side has closed."""
 
+REPL_HELP = """interactive client: a typed line is sent as-is plus the --eol ending;
+//text sends /text; /STEP runs one step other than TEXT or loop (e.g. /x:00 01 6f ff,
+/t:no-newline, /shut, /rst). At a terminal, /read waits for data that arrives after it.
+Ctrl-D (Ctrl-Z Enter on Windows) ends gracefully, Ctrl-C quits."""
 
-# --- Output --------------------------------------------------------------------
+
+# --- Output ------------------------------------------------------------------------
 
 _output_lock = threading.Lock()
 
@@ -89,8 +97,13 @@ def emit(line):
     """Print one whole line and flush it, so lines from the reader thread and
     the main thread never interleave and a pipe sees each line immediately."""
     with _output_lock:
-        sys.stdout.write(line + "\n")
-        sys.stdout.flush()
+        try:
+            sys.stdout.write(line + "\n")
+            sys.stdout.flush()
+        except OSError:  # BrokenPipeError; EINVAL on Windows
+            # Whoever read our output is gone (e.g. a `| tee` stopped by the
+            # same Ctrl-C): send the rest to devnull rather than a traceback.
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
 
 
 def timestamp(digits):
@@ -142,26 +155,27 @@ def describe(error):
     return "%s: %s" % (type(error).__name__, error.strerror or error)
 
 
-# --- Steps -----------------------------------------------------------------------
+# --- Steps -------------------------------------------------------------------------
 
 
 class StepError(ValueError):
-    """A step (or address) that does not parse; reported as a usage error."""
+    """A step, duration or address that does not parse (a usage error)."""
 
 
 ESCAPES = {"n": b"\n", "r": b"\r", "t": b"\t", "0": b"\0", "\\": b"\\"}
-KEYWORDS = ("read", "shut", "hold", "close", "abort", "rst", "loop")
-TERMINAL = ("close", "abort", "rst")
+KEYWORDS = ("read", "shut", "hold", "close", "rst", "loop")
+ENDINGS = ("close", "rst")
 
 
 def unescape(text):
-    """Text to UTF-8 bytes, honouring the \\n \\r \\t \\0 \\\\ and \\xNN escapes."""
+    """Text to UTF-8 bytes, honouring the \\n \\r \\t \\0 \\\\ and \\xNN escapes.
+    Undecodable command-line bytes (surrogate escapes) go out unchanged."""
     out = bytearray()
     i = 0
     while i < len(text):
         char = text[i]
         if char != "\\":
-            out += char.encode("utf-8")
+            out += char.encode("utf-8", "surrogateescape")
             i += 1
             continue
         code = text[i + 1:i + 2]
@@ -176,6 +190,17 @@ def unescape(text):
     return bytes(out)
 
 
+def duration(text):
+    """Seconds: a finite, non-negative number (also an argparse `type`)."""
+    try:
+        seconds = float(text)
+    except ValueError:
+        seconds = -1.0
+    if not (math.isfinite(seconds) and 0 <= seconds <= MAX_WAIT):
+        raise StepError("bad duration %r (seconds, e.g. 0.5)" % text)
+    return seconds
+
+
 def parse_step(token):
     """One step token -> (kind, argument); see STEPS_HELP."""
     if token in KEYWORDS:
@@ -186,40 +211,27 @@ def parse_step(token):
             raise StepError("empty step")
         return ("send", unescape(token))
     name, value = prefixed.groups()
+    if name == "sleep":
+        return ("sleep", duration(value))
     if name == "t":
-        if not value:
-            raise StepError("empty step %r" % token)
-        return ("send", unescape(value))
-    if name == "x":
+        data = unescape(value)
+    elif name == "x":
         try:
             data = bytes.fromhex(re.sub(r"[:\s,-]", "", value))
         except ValueError:
             raise StepError("bad hex in %r" % token) from None
-        if not data:
-            raise StepError("empty step %r" % token)
-        return ("send", data)
-    if name == "sleep":
-        try:
-            seconds = float(value)
-        except ValueError:
-            seconds = -1.0
-        if not seconds >= 0:  # also rejects nan
-            raise StepError("bad duration in %r (seconds, e.g. sleep:0.5)" % token)
-        return ("sleep", seconds)
-    if name == "read":
-        if not value.isdigit() or int(value) == 0:
-            raise StepError("bad byte count in %r (e.g. read:16)" % token)
-        return ("read", int(value))
-    raise StepError(
-        "unknown step %r; to send it as text write t:%s" % (name + ":", token)
-    )
+    else:
+        raise StepError("unknown step %r (to send it as text, prefix it with t:)" % token)
+    if not data:
+        raise StepError("empty step %r" % token)
+    return ("send", data)
 
 
 def parse_steps(tokens):
-    """Parse a whole step list and check where `loop` and the ending steps sit."""
+    """Parse a whole step list and check where `loop` and the endings sit."""
     steps = [parse_step(token) for token in tokens]
     for i, (kind, _) in enumerate(steps):
-        if (kind in TERMINAL or kind == "loop") and i != len(steps) - 1:
+        if (kind in ENDINGS or kind == "loop") and i != len(steps) - 1:
             raise StepError("%r must be the last step" % kind)
     if steps and steps[-1][0] == "loop":
         if not any(kind in ("sleep", "read") for kind, _ in steps):
@@ -227,11 +239,25 @@ def parse_steps(tokens):
     return steps
 
 
+def parse_command(command):
+    """An interactive `/COMMAND` (given without the slash) -> one step. Only
+    keywords and prefixed steps are commands, so a typo such as /quit is
+    reported instead of being sent as text."""
+    step = parse_step(command)
+    if step[0] == "loop":
+        raise StepError("loop only works in a step list")
+    if step[0] == "send" and not re.match(r"[tx]:", command):
+        raise StepError("unknown command /%s (a plain line is sent as typed; "
+                        "/t:TEXT sends text without the line ending)" % command)
+    return step
+
+
 def parse_addr(text):
-    """`host:port`, `[v6]:port` -> (host, port)."""
+    """`host:port` or `[v6]:port` -> (host, port)."""
     host, _, port = text.rpartition(":")
-    host = host[1:-1] if host.startswith("[") and host.endswith("]") else host
-    if not host or not port.isdigit() or int(port) > 65535:
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    if not host or not re.fullmatch(r"[0-9]{1,5}", port) or int(port) > 65535:
         raise StepError("bad address %r (expected host:port)" % text)
     return host, int(port)
 
@@ -241,7 +267,7 @@ def show_addr(addr):
     return ("[%s]:%d" if ":" in host else "%s:%d") % (host, port)
 
 
-# --- One connection ------------------------------------------------------------------
+# --- One connection ----------------------------------------------------------------
 
 
 class Broken(Exception):
@@ -254,14 +280,12 @@ class Conn:
     Received chunks also go onto a queue, consumed by `read` steps (and by the
     server's reply loop); `None` on the queue marks the end of the stream."""
 
-    def __init__(self, sock, log, tag, role, opts):
+    def __init__(self, sock, log, tag, role):
         self.sock = sock
         self.log = log
         self.tag = tag
         # The proxy's arrows: `<` is client -> server bytes, `>` server -> client.
         self.out_arrow, self.in_arrow = ("<", ">") if role == "client" else (">", "<")
-        self.split = opts.split
-        self.gap = opts.gap
         self.sent = 0
         self.received = 0
         self.peer_eof = False  # the other side sent FIN (a clean end)
@@ -308,27 +332,23 @@ class Conn:
             self.finished.set()
 
     def send(self, data):
-        pieces = [data]
-        if self.split:
-            pieces = [data[i:i + self.split] for i in range(0, len(data), self.split)]
-        for i, piece in enumerate(pieces):
-            if i and self.gap:
-                time.sleep(self.gap)
-            # Logged before sending, so the timestamps order as the bytes move:
-            # client `<`, then the proxy's `<`, then the server's `<`.
-            self.log.data(self.tag, self.out_arrow, piece)
-            try:
-                self.sock.sendall(piece)
-            except OSError as error:
-                self.log.event(self.tag, "!", "send failed: " + describe(error))
-                self.broken = True
-                raise Broken() from None
-            self.sent += len(piece)
+        if self.shut_sent:
+            self.log.event(self.tag, "!", "not sent: this side has already sent FIN")
+            return
+        # Logged before sending, so the timestamps order as the bytes move:
+        # the client's `<`, then the proxy's, then the server's.
+        self.log.data(self.tag, self.out_arrow, data)
+        try:
+            self.sock.sendall(data)
+        except OSError as error:
+            self.log.event(self.tag, "!", "send failed: " + describe(error))
+            self.broken = True
+            raise Broken() from None
+        self.sent += len(data)
 
     def shut(self):
         if self.shut_sent:
             return
-        self.log.event(self.tag, "-", "FIN sent (write side shut down)")
         try:
             self.sock.shutdown(socket.SHUT_WR)
         except OSError as error:
@@ -336,6 +356,7 @@ class Conn:
             self.broken = True
             raise Broken() from None
         self.shut_sent = True
+        self.log.event(self.tag, "-", "FIN sent (write side shut down)")
 
     def next_chunk(self):
         """The next received chunk not yet consumed, waiting for it; None once
@@ -349,14 +370,23 @@ class Conn:
                 self.chunks.put(None)  # keep the end marker for later callers
             return chunk
 
-    def read(self, count):
-        """Wait for one chunk, or for `count` bytes. False if the stream ended first."""
-        got = 0
-        while got < (count or 1):
-            chunk = self.next_chunk()
+    def drop_received(self):
+        """Consume every chunk already received (keeping the end marker)."""
+        while True:
+            try:
+                chunk = self.chunks.get_nowait()
+            except queue.Empty:
+                return
             if chunk is None:
-                return False
-            got += len(chunk)
+                self.chunks.put(None)
+                return
+
+    def read(self):
+        """Wait for received data and consume all of it. False if the other
+        side finished instead."""
+        if self.next_chunk() is None:
+            return False
+        self.drop_received()  # bytes may arrive in several chunks: take them all
         return True
 
     def hold(self):
@@ -364,16 +394,17 @@ class Conn:
             pass
 
     def finish(self, how):
-        """End the connection: `close` (graceful), `abort`, `rst`, or `interrupted`.
+        """End the connection: `close` (graceful), `rst`, or `interrupted`.
         A graceful close of a connection that already failed just closes it."""
         if how == "close" and not (self.broken or self.peer_error):
             try:
                 self.shut()
+                if not self.finished.wait(1.0):
+                    self.log.event(self.tag, "*",
+                                   "waiting for the other side to close (Ctrl-C quits)")
+                    self.hold()
             except Broken:
                 pass
-            if not self.finished.wait(1.0):
-                self.log.event(self.tag, "*", "waiting for the other side to close (Ctrl-C quits)")
-                self.hold()
         # Stop the reader before closing (see _read_loop).
         self.stop.set()
         self.reader.join()
@@ -385,12 +416,8 @@ class Conn:
                 self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, linger)
             except OSError as error:
                 self.log.event(self.tag, "!", "cannot arm the RST: " + describe(error))
-        detail = {
-            "close": "closed",
-            "abort": "closed without waiting (abort)",
-            "rst": "reset (RST sent)",
-            "interrupted": "closed (interrupted)",
-        }[how]
+        detail = {"close": "closed", "rst": "reset (RST sent)",
+                  "interrupted": "closed (interrupted)"}[how]
         self.log.event(
             self.tag, "x", "%s: sent %d B, received %d B" % (detail, self.sent, self.received)
         )
@@ -398,8 +425,8 @@ class Conn:
 
 
 def run_steps(conn, steps):
-    """Run `steps`; return the ending step that ran (`close`/`abort`/`rst`), or
-    None. Raises Broken if the connection failed underneath."""
+    """Run `steps`; return the ending step that ran (`close`/`rst`), or None.
+    Raises Broken if the connection failed underneath."""
     looping = bool(steps) and steps[-1][0] == "loop"
     while True:
         for kind, arg in steps:
@@ -408,13 +435,13 @@ def run_steps(conn, steps):
             elif kind == "sleep":
                 time.sleep(arg)
             elif kind == "read":
-                if not conn.read(arg) and looping:
+                if not conn.read() and looping:
                     return None
             elif kind == "shut":
                 conn.shut()
             elif kind == "hold":
                 conn.hold()
-            elif kind in TERMINAL:
+            elif kind in ENDINGS:
                 return kind
             elif kind == "loop" and conn.finished.is_set():
                 return None
@@ -422,28 +449,30 @@ def run_steps(conn, steps):
             return None
 
 
-# --- server ----------------------------------------------------------------------------
+# --- server ------------------------------------------------------------------------
 
 
 def handle(sock, addr, log, opts):
     """Serve one accepted connection: --on-accept steps, the reply loop, then
     --on-eof steps once the other side has sent FIN."""
-    conn = Conn(sock, log, "s:%d" % addr[1], "server", opts)
-    log.event(conn.tag, "*", "accepted from %s" % show_addr(addr))
+    tag = "s:%d" % addr[1]
+    # Logged before the reader thread exists, so no data line can precede it.
+    log.event(tag, "*", "accepted from %s" % show_addr(addr))
+    conn = Conn(sock, log, tag, "server")
     ending = None
     try:
         ending = run_steps(conn, opts.on_accept)
         looped = bool(opts.on_accept) and opts.on_accept[-1][0] == "loop"
-        # A looping --on-accept script replaces the reply loop.
+        # A looping --on-accept list replaces the reply loop.
         if ending is None and not looped:
             while True:
                 chunk = conn.next_chunk()
                 if chunk is None:
                     break
-                if opts.mode == "echo":
-                    conn.send(chunk)
-                elif opts.mode == "prefix":
-                    conn.send(opts.prefix + chunk)
+                # No replies once this side has sent FIN (--on-accept ... shut).
+                if opts.mode == "sink" or conn.shut_sent:
+                    continue
+                conn.send(chunk if opts.mode == "echo" else opts.prefix + chunk)
         if ending is None and conn.peer_eof:
             ending = run_steps(conn, opts.on_eof)
     except Broken:
@@ -462,8 +491,8 @@ def run_server(opts, log):
         "echo": "mode echo: replies the data",
         "sink": "mode sink: never replies",
     }[opts.mode]
-    log.event(None, "*", "listening on %s (%s)" % (show_addr(listener.getsockname()), mode))
     try:
+        log.event(None, "*", "listening on %s (%s)" % (show_addr(listener.getsockname()), mode))
         while True:
             try:
                 sock, addr = listener.accept()
@@ -477,12 +506,15 @@ def run_server(opts, log):
             threading.Thread(target=handle, args=(sock, addr, log, opts), daemon=True).start()
     except KeyboardInterrupt:
         log.event(None, "*", "stopped")
+        # Connection threads may still be logging. Keep them off stdout while
+        # the interpreter shuts down (it flushes stdout on the way out).
+        _output_lock.acquire()
         return 0
     finally:
         listener.close()
 
 
-# --- client ----------------------------------------------------------------------------
+# --- client ------------------------------------------------------------------------
 
 
 def connect(opts, log):
@@ -514,12 +546,16 @@ def connect(opts, log):
 def repl(conn, log, eol):
     """Interactive mode: each typed line is sent as-is plus `eol`; `/STEP` runs
     a step. End of input (Ctrl-D) ends the connection gracefully."""
-    if sys.stdin.isatty():
+    interactive = sys.stdin.isatty()
+    if interactive:
         try:
             import readline  # noqa: F401 (line editing and history where available)
         except ImportError:
             pass
-    log.event(None, "*", "type a line to send it; /help lists the steps; "
+    # Decoded (and re-encoded below) as UTF-8 whatever the locale, with bytes
+    # that are not valid UTF-8 carried through: piped input goes out unchanged.
+    sys.stdin.reconfigure(encoding="utf-8", errors="surrogateescape")
+    log.event(None, "*", "type a line to send it; /help for more; "
                          "Ctrl-D ends gracefully, Ctrl-C quits")
     while True:
         try:
@@ -528,19 +564,23 @@ def repl(conn, log, eol):
             return "close"
         if not line.startswith("/") or line.startswith("//"):
             text = line[1:] if line.startswith("//") else line
-            conn.send(text.encode("utf-8") + eol)
+            conn.send(text.encode("utf-8", "surrogateescape") + eol)
             continue
         if line == "/help":
-            emit("  (a plain line is sent as-is plus the --eol ending; //text sends /text)")
-            emit(STEPS_HELP)
+            emit("\n\n".join((REPL_HELP, STEPS_HELP, LEGEND)))
             continue
         try:
-            step = parse_step(line[1:])
+            step = parse_command(line[1:])
         except StepError as error:
-            log.event(None, "!", "%s (/help lists the steps)" % error)
+            log.event(None, "!", "%s; /help lists the commands" % error)
             continue
-        if step[0] == "loop":
-            log.event(None, "!", "loop only works in a step list")
+        if step[0] == "read":
+            if interactive:
+                # A person has already seen what arrived so far: wait for more.
+                # (Piped input keeps the `read` step's meaning.)
+                conn.drop_received()
+            if not conn.read():
+                log.event(conn.tag, "*", "nothing more to read: the other side has finished")
             continue
         ending = run_steps(conn, [step])
         if ending:
@@ -551,11 +591,11 @@ def run_client(opts, log):
     sock = connect(opts, log)
     if sock is None:
         return 1
-    local, remote = sock.getsockname(), sock.getpeername()
-    conn = Conn(sock, log, "c:%d" % local[1], "client", opts)
-    log.event(conn.tag, "*", "connected to %s from %s (the proxy logs it as "
-                             "'Incoming connection from %s')"
-              % (show_addr(remote), show_addr(local), show_addr(local)))
+    local = sock.getsockname()
+    tag = "c:%d" % local[1]
+    # Logged before the reader thread exists, so no data line can precede it.
+    log.event(tag, "*", "connected to %s from %s" % (opts.connect, show_addr(local)))
+    conn = Conn(sock, log, tag, "client")
     eol = {"lf": b"\n", "crlf": b"\r\n", "none": b""}[opts.eol]
     ending = "close"
     try:
@@ -567,22 +607,27 @@ def run_client(opts, log):
         ending = "close"
     except KeyboardInterrupt:
         ending = "interrupted"
-    try:
-        conn.finish(ending)
-    except KeyboardInterrupt:  # Ctrl-C while waiting for the other side to close
-        conn.finish("interrupted")
+    if ending != "interrupted":
+        try:
+            conn.finish(ending)
+            return 0
+        except KeyboardInterrupt:  # Ctrl-C while waiting for the other side to close
+            pass
+    # Closing now takes a moment at most: let a second Ctrl-C not cut it short.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    conn.finish("interrupted")
     return 0
 
 
-# --- recipes ---------------------------------------------------------------------------
+# --- recipes -----------------------------------------------------------------------
 
 # Ready-made scenarios: what to run in each terminal and what to look for.
-# `proxy` is appended to PROXY_BASE and `remote` overrides the proxy's -r;
-# `server: None` means leave the destination down. A recipe with `ci: True`
-# is run by scripts/integration_test.py against the real binary (with the
-# addresses swapped for ephemeral ports): `expect` lists substrings each
-# terminal must print, in order, and `absent` substrings it must not print.
-# Keep `ci` for scenarios whose output is deterministic on every OS.
+# `proxy` is appended to PROXY_BASE; `server: None` means leave the destination
+# down; `stdin` is piped into the client. A recipe with `ci: True` is run by
+# scripts/integration_test.py against the real binary (with the addresses
+# swapped for ephemeral ports): `expect` lists substrings each terminal must
+# print, in order, and `absent` substrings it must not print. Keep `ci` for
+# scenarios whose output is deterministic on every OS.
 PROXY_BASE = ["-p", "milliseconds"]
 
 RECIPES = [
@@ -593,10 +638,11 @@ RECIPES = [
         "server": [],
         "client": [],
         "look": [
-            "T3: type lines; /x:00 01 6f ff sends raw bytes; /help lists the steps.",
+            "T3: type lines; /x:00 01 6f ff sends raw bytes; /help lists everything.",
             "The same bytes carry the same arrow in all three terminals: < is",
             "client -> server, > is server -> client. The server replies 're: ' + data,",
-            "so the two directions differ. Ctrl-D in T3 ends the conversation gracefully.",
+            "so the two directions differ. Try -f decimal (or upperhex, octal, binary)",
+            "in all three terminals. Ctrl-D in T3 ends the conversation gracefully.",
         ],
     },
     {
@@ -621,24 +667,6 @@ RECIPES = [
         },
     },
     {
-        "name": "formats",
-        "about": "Binary payload rendered as decimal in every terminal.",
-        "proxy": ["-f", "decimal"],
-        "server": ["-f", "decimal", "--mode", "echo"],
-        "client": ["-f", "decimal", "x:00:01:6f:ff", "read"],
-        "look": [
-            "All three terminals print 0:1:111:255 for the bytes 00 01 6f ff.",
-            "Try the other -f values (lowerhex, upperhex, octal, binary) and -s, e.g.",
-            "-s ' ', in all three terminals.",
-        ],
-        "ci": True,
-        "expect": {
-            "client": ["< 0:1:111:255", "> 0:1:111:255"],
-            "proxy": ["[#1] < 0:1:111:255", "[#1] > 0:1:111:255"],
-            "server": ["< 0:1:111:255", "> 0:1:111:255"],
-        },
-    },
-    {
         "name": "pipe",
         "about": "Pipe lines into the client, like `nc -N`.",
         "proxy": [],
@@ -648,7 +676,7 @@ RECIPES = [
         "look": [
             "Each input line is sent with a \\n; /STEP lines run steps. End of input",
             "closes gracefully once the echo has come back. The proxy logs one line",
-            "per read, so the two sends may show up as one line.",
+            "per read, not per message, so the two sends may show up as one line.",
         ],
         "ci": True,
         "expect": {
@@ -675,28 +703,6 @@ RECIPES = [
         },
     },
     {
-        "name": "drip",
-        "about": "One byte per write: log lines are reads, not messages.",
-        "proxy": [],
-        "server": ["--mode", "sink"],
-        "client": ["--split", "1", "--gap", "0.2", "hello\\n"],
-        "look": [
-            "T1: one [#1] < line per byte, about 200 ms apart. The opposite also",
-            "happens: writes that arrive together are read, and logged, as one line.",
-        ],
-    },
-    {
-        "name": "ticker",
-        "about": "Server push only; that one direction keeps the idle timeout away.",
-        "proxy": ["-t", "3"],
-        "server": ["--mode", "sink", "--on-accept", "tick\\n", "sleep:1", "loop"],
-        "client": ["hold"],
-        "look": [
-            "T1: a [#1] > line every second and no idle close, although the client",
-            "never sends. Stop the client with Ctrl-C; the server then stops ticking.",
-        ],
-    },
-    {
         "name": "half-close",
         "about": "The client half-closes; the reply still arrives afterwards.",
         "proxy": [],
@@ -717,45 +723,15 @@ RECIPES = [
         },
     },
     {
-        "name": "server-half-close",
-        "about": "The server half-closes first; the client may still send.",
-        "proxy": [],
-        "server": ["--mode", "sink", "--on-accept", "BYE\\n", "shut"],
-        "client": ["read", "sleep:0.3", "LATE\\n"],
-        "look": [
-            "T1: > BYE, '- Writer shutdown request.', then < LATE: the server still",
-            "receives data after its own FIN (T2 logs it).",
-        ],
-        "ci": True,
-        "expect": {
-            "client": ["> 42:59:45:0a", "= EOF", "< 4c:41:54:45:0a", "- FIN sent"],
-            "proxy": ["[#1] > 42:59:45:0a", "[#1] - Writer shutdown request.",
-                      "[#1] < 4c:41:54:45:0a"],
-            "server": ["> 42:59:45:0a", "- FIN sent", "< 4c:41:54:45:0a", "= EOF"],
-        },
-    },
-    {
-        "name": "server-abort",
-        "about": "The server closes after one read; the client keeps sending.",
-        "proxy": [],
-        "server": ["--mode", "sink", "--on-accept", "read", "abort"],
-        "client": ["one", "sleep:0.5", "two", "sleep:0.5", "three"],
-        "look": [
-            "T1: < one, the server's FIN forwarded, < two (logged, but the closed",
-            "server answers it with RST), < three, then an ERROR line",
-            "'! Error during async write'. The proxy logs bytes it could not deliver.",
-            "T3 only sees a clean EOF.",
-        ],
-    },
-    {
         "name": "client-rst",
         "about": "The client resets; the server sees an ordinary FIN.",
         "proxy": [],
         "server": [],
         "client": ["hello\\n", "read", "rst"],
         "look": [
-            "T1: an ERROR line '! Error during async read: ...reset...'. T2 logs a",
+            "T1: an ERROR line '! Error during async read: ...' (connection reset). T2 logs a",
             "plain '= EOF': the proxy turns the RST into a FIN towards the server.",
+            "The mirror image: server --on-accept read rst, client 'hello\\n' read.",
             "Rerun the proxy with -l info: payload lines vanish, the ERROR line stays.",
         ],
         "ci": True,
@@ -765,24 +741,6 @@ RECIPES = [
             "server": ["< 68:65:6c:6c:6f:0a", "= EOF", "x closed"],
         },
         "absent": {"server": [" ! "]},
-    },
-    {
-        "name": "server-rst",
-        "about": "The server resets; the client sees an ordinary FIN.",
-        "proxy": [],
-        "server": ["--on-accept", "read", "rst"],
-        "client": ["hello\\n", "read"],
-        "look": [
-            "T1: '! Error during async read: ...reset...'. T3 logs a plain '= EOF':",
-            "RSTs do not cross the proxy.",
-        ],
-        "ci": True,
-        "expect": {
-            "client": ["< 68:65:6c:6c:6f:0a", "= EOF", "x closed"],
-            "proxy": ["[#1] < 68:65:6c:6c:6f:0a", "[#1] ! Error during async read"],
-            "server": ["< 68:65:6c:6c:6f:0a", "x reset (RST sent)"],
-        },
-        "absent": {"client": [" ! "]},
     },
     {
         "name": "idle",
@@ -825,18 +783,6 @@ RECIPES = [
         ],
     },
     {
-        "name": "ctrl-c",
-        "about": "Stopping the proxy with live connections.",
-        "proxy": [],
-        "server": [],
-        "client": ["hello\\n", "read", "hold"],
-        "look": [
-            "Press Ctrl-C in T1: 'Received shutdown signal, stopping listener.', then",
-            "the connection's 'x Deallocated.' lines; both peers log '= EOF'.",
-            "(Closing the terminal or `kill` sends SIGTERM instead, which skips all that.)",
-        ],
-    },
-    {
         "name": "modbus",
         "about": "A MODBUS/TCP master polling a canned device every second.",
         "proxy": [],
@@ -853,8 +799,8 @@ RECIPES = [
 
 def recipe_commands(recipe):
     """The three terminals' commands for `recipe`, as argv lists (None = unused)."""
-    remote = recipe.get("remote", SERVER_ADDR)
-    proxy = ["cargo", "run", "--", "-b", PROXY_ADDR, "-r", remote] + PROXY_BASE + recipe["proxy"]
+    proxy = ["cargo", "run", "--", "-b", PROXY_ADDR, "-r", SERVER_ADDR]
+    proxy += PROXY_BASE + recipe["proxy"]
     peer = ["python3", "scripts/peer.py"]
     server = None if recipe["server"] is None else peer + ["server"] + recipe["server"]
     return proxy, server, peer + ["client"] + recipe["client"]
@@ -888,24 +834,22 @@ def show_recipes(name):
 
 
 def check_recipes():
-    """Parse every recipe's peer arguments, so a recipe that no longer matches
-    the CLI fails loudly. Used by scripts/integration_test.py."""
+    """Parse every recipe's peer arguments and piped commands, so a recipe that
+    no longer matches the CLI fails loudly. Used by scripts/integration_test.py."""
     parser = build_parser()
     for recipe in RECIPES:
-        for role in ("server", "client"):
-            if recipe[role] is None:
-                continue
-            try:
-                prepare(parser.parse_args([role] + recipe[role]))
-            except (StepError, SystemExit) as error:
-                raise ValueError("recipe %r: bad %s arguments: %s"
-                                 % (recipe["name"], role, error)) from None
-        for line in recipe.get("stdin", "").splitlines():
-            if line.startswith("/") and not line.startswith("//"):
-                parse_step(line[1:])
+        try:
+            for role in ("server", "client"):
+                if recipe[role] is not None:
+                    prepare(parser.parse_args([role] + recipe[role]))
+            for line in recipe.get("stdin", "").splitlines():
+                if line.startswith("/") and not line.startswith("//"):
+                    parse_command(line[1:])
+        except (StepError, SystemExit) as error:
+            raise ValueError("recipe %r does not parse: %s" % (recipe["name"], error)) from None
 
 
-# --- command line ----------------------------------------------------------------------
+# --- command line ------------------------------------------------------------------
 
 
 def build_parser():
@@ -919,21 +863,18 @@ def build_parser():
                         help="timestamp precision (default: milliseconds)")
     output.add_argument("--no-text", action="store_true",
                         help="hide the quoted text preview after each payload")
-    sending = common.add_argument_group("sending")
-    sending.add_argument("--split", type=int, default=0, metavar="N",
-                         help="send every payload in N-byte writes")
-    sending.add_argument("--gap", type=float, default=0.0, metavar="S",
-                         help="pause S seconds between those writes")
 
     parser = argparse.ArgumentParser(
         description="Scriptable TCP peers for manually testing logged_tcp_proxy.",
-        epilog="Start with: python3 scripts/peer.py recipes",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=LEGEND + "\n\nStart with: python3 scripts/peer.py recipes",
     )
     commands = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
     formatter = argparse.RawDescriptionHelpFormatter
 
     server = commands.add_parser(
-        "server", parents=[common], formatter_class=formatter, epilog=STEPS_HELP,
+        "server", parents=[common], formatter_class=formatter,
+        epilog=STEPS_HELP + "\n\n" + LEGEND,
         help="the destination: accept connections from the proxy and answer",
         description="Accept connections (from the proxy) and answer them. Per connection:\n"
                     "run the --on-accept steps, reply to each received chunk according\n"
@@ -956,7 +897,8 @@ def build_parser():
                         help="exit after the first connection has closed")
 
     client = commands.add_parser(
-        "client", parents=[common], formatter_class=formatter, epilog=STEPS_HELP,
+        "client", parents=[common], formatter_class=formatter,
+        epilog=STEPS_HELP + "\n\n" + REPL_HELP + "\n\n" + LEGEND,
         help="connect to the proxy and talk through it",
         description="Connect (to the proxy) and run the STEPs; with no steps, send the\n"
                     "lines typed in the terminal (or piped in). Afterwards the connection\n"
@@ -965,7 +907,7 @@ def build_parser():
     client.add_argument("steps", nargs="*", metavar="STEP", help="steps to run (see below)")
     client.add_argument("-C", "--connect", default=PROXY_ADDR, metavar="ADDR",
                         help="address to connect to (default: %s, the proxy's -b)" % PROXY_ADDR)
-    client.add_argument("--retry", type=float, default=15.0, metavar="S",
+    client.add_argument("--retry", type=duration, default=15.0, metavar="S",
                         help="keep retrying a refused connection for S seconds "
                              "(default: 15)")
     client.add_argument("--eol", choices=["lf", "crlf", "none"], default="lf",
@@ -978,9 +920,6 @@ def build_parser():
 
 def prepare(opts):
     """Validate and convert the parsed options in place; raises StepError."""
-    if opts.command in ("server", "client"):
-        if opts.split < 0 or opts.gap < 0:
-            raise StepError("--split and --gap must not be negative")
     if opts.command == "server":
         parse_addr(opts.listen)
         opts.prefix = unescape(opts.prefix)
@@ -1003,6 +942,9 @@ def main(argv=None):
         parser.error(str(error))
     if opts.command == "recipes":
         return show_recipes(opts.name)
+    # Ctrl-C must always stop a peer (printing its closing lines), even one
+    # started from a script that set SIGINT to be ignored.
+    signal.signal(signal.SIGINT, signal.default_int_handler)
     log = Log(opts.command, opts)
     try:
         if opts.command == "server":

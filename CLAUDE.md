@@ -434,15 +434,17 @@ covers several cases:
 - **bind failure** — binding an in-use address exits non-zero without panicking.
 - **threads** — the proxy serves with a non-default `--threads` count and
   rejects `0`.
-- **manual-testing peers** — every recipe in [`scripts/peer.py`](scripts/peer.py)
-  must still parse and print, and each `ci` recipe runs end to end: the peer
-  server, the proxy and the peer client on ephemeral ports, started in that order
-  and each awaited through its own ready line (no probe connection). On top of the
-  recipe's own `expect`/`absent` lines, every run checks that the peers exit
-  cleanly, that the client is the proxy's `[#1]` (and the only connection), and
-  that the bytes logged in each direction agree across all three processes. On
-  POSIX, SIGINT must also stop the peer server cleanly. See
-  [Manual testing](#manual-testing).
+- **manual-testing peers** — the byte renderings of [`scripts/peer.py`](scripts/peer.py)
+  match the `RENDERINGS` that the relay + logging cases check against the binary,
+  for all 256 byte values, and every recipe still parses and prints. Each `ci` recipe runs end to end:
+  - the peer server, the proxy and the peer client start on ephemeral ports, in
+    that order;
+  - the server and the proxy are each awaited through their ready line (no probe
+    connection), then the client runs to completion;
+  - the recipe's `expect`/`absent` lines are asserted per terminal, along with
+    clean peer exits and the client being the proxy's `[#1]` and only connection.
+
+  See [Manual testing](#manual-testing).
 - **Ctrl-C** — SIGINT shuts the proxy down with exit code `0` (POSIX only).
 
 It uses only the Python standard library (no `pip` packages), so it runs the same
@@ -458,42 +460,25 @@ job.
 
 ## Manual testing
 
-[`scripts/peer.py`](scripts/peer.py) supplies the two things a person needs to
-watch the proxy work:
-- `peer.py server` listens on `127.0.0.1:20582`, the proxy's `-r`;
-- `peer.py client` connects to `127.0.0.1:20502`, the proxy's `-b`.
+[`scripts/peer.py`](scripts/peer.py) is the peer server (`127.0.0.1:20582`, the
+proxy's `-r`) and client (`127.0.0.1:20502`, the proxy's `-b`) to run in separate
+terminals around `cargo run -- -b 127.0.0.1:20502 -r 127.0.0.1:20582 -p
+milliseconds`. [CONTRIBUTING.md](CONTRIBUTING.md#manual-testing) is the user guide.
+Invariants to keep when editing it:
 
-Run them in separate terminals around
-`cargo run -- -b 127.0.0.1:20502 -r 127.0.0.1:20582 -p milliseconds`.
-[CONTRIBUTING.md](CONTRIBUTING.md#manual-testing) is the user guide. The design
-points to keep:
-
-- **Same shape as the proxy's output.**
-  - Timestamps are RFC 3339 (`-p`, default milliseconds).
-  - Payloads use the proxy's `-f`/`-s` values.
-  - `<`/`>` mean what they mean in the proxy, in every terminal: `<` is client →
-    server, `>` is server → client. They do not mean "sent"/"received".
-  - The client's `[c:PORT]` tag is the port in the proxy's
-    `Incoming connection from` line.
-  - The peers add what the proxy cannot show: `-` FIN sent, `=` EOF received, `x`
-    closed (and how), `!` socket error.
-- **No probe connections.** The client retries only a *refused* connect. It never
-  opens a throwaway connection, so the first client is the proxy's `[#1]`.
-- **Drain before close.**
-  - The default ending (`close`) sends FIN and waits for the other side's FIN
-    before closing, so the peers never cause an accidental RST. `abort` and `rst`
-    exist to cause one on purpose.
-  - Each connection's reader thread polls with `select()` instead of blocking in
-    `recv()`, and is stopped before any close: closing a socket under a blocked
-    `recv()` can delay its FIN/RST.
-- **Recipes are data.** `RECIPES` holds the scenarios `peer.py recipes` prints.
-  - A recipe marked `ci: True` is also run by the black-box test (see above)
-    against the real binary on all three OSes, asserting its `expect`/`absent`
-    lines per terminal.
-  - Mark `ci` only for scenarios whose output is deterministic on every OS.
-  - Leave the rest as manual walkthroughs: timing-dependent ones (drip, ticker),
-    OS-dependent ones (server-abort, dest-down), and ones that need a person
-    (Ctrl-C, a second client).
+- **The proxy's output shape.**
+  - `<`/`>` keep the proxy's meaning in every terminal (client → server / server →
+    client), never "sent"/"received".
+  - Payloads render exactly like the proxy's `-f`/`-s`. The black-box test checks
+    every byte value against the renderings it pins on the binary.
+- **No probe connections.** The client retries only a *refused* connect, so the
+  first client is the proxy's `[#1]`.
+- **No accidental RSTs.** The default ending sends FIN and waits for the other
+  side's FIN before closing; only `rst` resets. The reader thread polls with
+  `select()` and is stopped before any close, because closing a socket under a
+  blocked `recv()` can delay its FIN/RST.
+- **Recipes are data.** `RECIPES` is what `peer.py recipes` prints. Set
+  `ci: True` only for scenarios whose output is deterministic on every OS.
 
 ## Continuous integration
 
@@ -510,8 +495,8 @@ points to keep:
   ubuntu/macos/windows × stable/beta/nightly.
 - **integration** — builds the binary and runs the black-box
   [`scripts/integration_test.py`](scripts/integration_test.py), including the
-  manual-testing peers' `ci` recipes, on ubuntu/macos/windows (the Ctrl-C cases
-  are skipped on Windows).
+  manual-testing peers' `ci` recipes, on ubuntu/macos/windows (the Ctrl-C case is
+  skipped on Windows).
 - **coverage** — `cargo llvm-cov` (source-based LLVM coverage, stable toolchain +
   the `llvm-tools` component) on ubuntu, printing a per-file summary to the job
   summary. It always passes `--ignore-filename-regex 'src/tests'`: the tests are

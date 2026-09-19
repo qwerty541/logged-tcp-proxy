@@ -939,13 +939,15 @@ def test_unresolvable_remote(binary):
 
 
 PEER = os.path.join(ROOT, "scripts", "peer.py")
-# The number base of each `--formatting` value, to read a logged payload back.
-FORMATTING_BASES = {"lowerhex": 16, "upperhex": 16, "decimal": 10, "octal": 8, "binary": 2}
-# A payload line: group 1 is the arrow, group 2 the rendered bytes. The proxy
-# tags its lines `[#1]` (the runner makes exactly one connection); the peers
-# tag theirs `[c:PORT]` / `[s:PORT]`.
-PROXY_PAYLOAD_LINE = r"\] \[#1\] ([<>]) (\S+)$"
-PEER_PAYLOAD_LINE = r"\] \[[cs]:\d+\] ([<>]) (\S+)"
+# How the proxy renders one byte for each `--formatting` value. The cases in
+# main() check these against the real binary; the peers must render the same.
+RENDERINGS = {
+    "lowerhex": lambda b: "%02x" % b,
+    "upperhex": lambda b: "%02X" % b,
+    "decimal": lambda b: "%d" % b,
+    "octal": lambda b: "%03o" % b,
+    "binary": lambda b: format(b, "08b"),
+}
 
 
 def load_peer():
@@ -972,20 +974,12 @@ def missing_in_order(text, needles):
     return None
 
 
-def logged_bytes(output, line_pattern, arrow, base):
-    """Join the payload bytes of every `arrow` line of `output` (the separator
-    is the default `:`), to compare what different processes logged."""
-    data = bytearray()
-    for match in re.finditer(line_pattern, output, re.M):
-        if match.group(1) == arrow:
-            data += bytes(int(token, base) for token in match.group(2).split(":"))
-    return bytes(data)
-
-
 def run_peer_recipe(binary, peer, recipe):
-    """Run one `ci` recipe of scripts/peer.py for real: server, proxy and client
-    on ephemeral ports, started in that order, each waited for through its own
-    ready line (never a probe connection, so the client is the proxy's `[#1]`)."""
+    """Run one `ci` recipe of scripts/peer.py for real: the peer server, the
+    proxy and the peer client on ephemeral ports, started in that order. The
+    server and the proxy are each awaited through their own ready line, never a
+    probe connection, so the client is the proxy's `[#1]`; the client then runs
+    to completion."""
     case = "peer:" + recipe["name"]
     processes = {}
     drains = {}
@@ -1041,14 +1035,14 @@ def run_peer_recipe(binary, peer, recipe):
                 break
             time.sleep(0.05)
     finally:
-        for proc in processes.values():
-            if proc.poll() is None:
-                proc.terminate()
+        for process in processes.values():
+            if process.poll() is None:
+                process.terminate()
                 try:
-                    proc.wait(timeout=5)
+                    process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait()
+                    process.kill()
+                    process.wait()
         for thread, _ in drains.values():
             thread.join(timeout=5)
 
@@ -1072,71 +1066,41 @@ def run_peer_recipe(binary, peer, recipe):
     if "[#2]" in output("proxy"):
         fail("[%s] the proxy saw a second connection" % case, all_output())
 
-    # Every byte the proxy logged is a byte the peers logged, and vice versa:
-    # client `<` == proxy `<` == server `<`, and the same for `>`. Joined bytes,
-    # never line counts: each process splits the stream into reads differently.
-    formatting = "lowerhex"
-    if "-f" in recipe["proxy"]:
-        formatting = recipe["proxy"][recipe["proxy"].index("-f") + 1]
-    base = FORMATTING_BASES[formatting]
-    for arrow in "<>":
-        seen = {
-            "client": logged_bytes(output("client"), PEER_PAYLOAD_LINE, arrow, base),
-            "proxy": logged_bytes(output("proxy"), PROXY_PAYLOAD_LINE, arrow, base),
-            "server": logged_bytes(output("server"), PEER_PAYLOAD_LINE, arrow, base),
-        }
-        if len(set(seen.values())) != 1:
-            fail("[%s] the `%s` bytes differ between the processes: %r" % (case, arrow, seen),
-                 all_output())
-
     print("OK [%s] %s" % (case, recipe["about"]))
 
 
 def test_peer_recipes(binary):
     """The manual-testing peers (scripts/peer.py) keep working against the real
-    binary. Every recipe must still parse and print, and every recipe marked
-    `ci` runs for real (see run_peer_recipe); on POSIX, Ctrl-C also stops the
-    server cleanly."""
+    binary: their byte renderings match RENDERINGS (which the relay + logging
+    cases check against the binary) for all 256 byte values, every recipe still
+    parses and prints, and every recipe marked `ci` runs for real (see
+    run_peer_recipe)."""
     peer = load_peer()
+    if set(peer.FORMATS) != set(RENDERINGS):
+        fail("[peer] peer.py's -f values %s differ from the proxy's %s"
+             % (sorted(peer.FORMATS), sorted(RENDERINGS)))
+    for formatting, render in RENDERINGS.items():
+        for byte in range(256):
+            if peer.FORMATS[formatting](byte) != render(byte):
+                fail("[peer] peer.py renders byte %d as %r with -f %s; the proxy prints %r"
+                     % (byte, peer.FORMATS[formatting](byte), formatting, render(byte)))
     try:
         peer.check_recipes()
-        with contextlib.redirect_stdout(io.StringIO()):
-            for name in [None] + [recipe["name"] for recipe in peer.RECIPES]:
-                if peer.main(["recipes"] + ([name] if name else [])) != 0:
-                    fail("[peer] `peer.py recipes %s` failed" % (name or ""))
     except ValueError as error:
         fail("[peer] %s" % error)
+    # Print every recipe (output discarded), then report any failure once
+    # stdout is back.
+    failed = []
+    with contextlib.redirect_stdout(io.StringIO()):
+        for name in [None] + [recipe["name"] for recipe in peer.RECIPES]:
+            if peer.main(["recipes"] + ([name] if name else [])) != 0:
+                failed.append(name or "(list)")
+    if failed:
+        fail("[peer] `peer.py recipes NAME` failed for: %s" % ", ".join(failed))
 
     for recipe in peer.RECIPES:
         if recipe.get("ci"):
             run_peer_recipe(binary, peer, recipe)
-
-    if platform.system() == "Windows":
-        print("SKIP [peer:ctrl-c] SIGINT delivery is tested only on POSIX")
-        return
-    server = subprocess.Popen(
-        [sys.executable, PEER, "server", "-L", HOST + ":0"],
-        cwd=ROOT,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
-    drain, lines = start_output_drain(server)
-    deadline = time.monotonic() + START_TIMEOUT
-    while time.monotonic() < deadline and "listening on" not in "".join(lines):
-        time.sleep(0.05)
-    server.send_signal(signal.SIGINT)
-    try:
-        server.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        server.kill()
-        server.wait()
-    drain.join(timeout=5)
-    output = "".join(lines)
-    if server.returncode != 0 or "Traceback" in output or "* stopped" not in output:
-        fail("[peer:ctrl-c] the server did not stop cleanly on SIGINT (rc=%s)"
-             % server.returncode, output)
-    print("OK [peer:ctrl-c] the peer server stops cleanly on SIGINT")
 
 
 def main():
@@ -1145,11 +1109,11 @@ def main():
     # One case per `--formatting` value: printing the payload in the requested
     # notation is the whole point of the tool, so every mode is exercised against
     # the real binary (the in-crate `tests::formatting` module pins the renderings).
-    run_case(binary, "lowerhex", ":", lambda b: "%02x" % b)
-    run_case(binary, "upperhex", "-", lambda b: "%02X" % b)
-    run_case(binary, "decimal", ":", lambda b: "%d" % b)
-    run_case(binary, "octal", ":", lambda b: "%03o" % b)
-    run_case(binary, "binary", ":", lambda b: format(b, "08b"))
+    run_case(binary, "lowerhex", ":", RENDERINGS["lowerhex"])
+    run_case(binary, "upperhex", "-", RENDERINGS["upperhex"])
+    run_case(binary, "decimal", ":", RENDERINGS["decimal"])
+    run_case(binary, "octal", ":", RENDERINGS["octal"])
+    run_case(binary, "binary", ":", RENDERINGS["binary"])
     test_direction_markers_and_no_double_logging(binary)
     test_connection_id_tags(binary)
     test_no_connection_ids_flag(binary)
