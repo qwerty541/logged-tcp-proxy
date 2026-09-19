@@ -147,6 +147,12 @@ All source lives in `src/`:
 - [`scripts/integration_test.py`](scripts/integration_test.py) — a black-box
   integration test that drives the **compiled binary** end to end (lives outside
   `src/` and is not part of the published crate). See [Testing](#testing).
+- [`scripts/peer.py`](scripts/peer.py) — the manual-testing peers: a scriptable
+  TCP **server** (the destination) and **client** to run in separate terminals
+  around the proxy, plus a `RECIPES` table of ready-made three-terminal scenarios
+  (`peer.py recipes`). Standard library only, like the black-box test, which
+  imports it to run the deterministic recipes; not part of the published crate.
+  See [Manual testing](#manual-testing).
 
 ## How a proxied connection works
 
@@ -298,7 +304,9 @@ need to be requested each time:
   regressions are caught: the in-crate tests in [`src/tests/`](src/tests) (add the
   test to the submodule matching its behavior, and any new shared helper to
   `helpers`) and/or the black-box
-  [`scripts/integration_test.py`](scripts/integration_test.py).
+  [`scripts/integration_test.py`](scripts/integration_test.py). A change to the
+  proxy's console output also updates the `expect`/`absent` lines of the affected
+  recipes in [`scripts/peer.py`](scripts/peer.py) (and their `look` text).
 - **Docs** — update this `CLAUDE.md` and [`README.md`](README.md) wherever they
   describe what changed (behavior, CLI options, architecture). Also keep
   [`CONTRIBUTING.md`](CONTRIBUTING.md) in sync when a change touches what it
@@ -308,7 +316,9 @@ need to be requested each time:
   [`CHANGELOG.md`](CHANGELOG.md) (Keep a Changelog format) for anything worth
   mentioning to users.
 - **Checks** — run the full set above (`build --all-targets`, `test`, `clippy`,
-  `fmt --check`) and keep it green.
+  `fmt --check`) and keep it green. When the change touches `scripts/` or the
+  proxy's console output, also run `python3 scripts/integration_test.py`: it is
+  the only check that runs the Python peers.
 
 ## Testing
 
@@ -424,6 +434,17 @@ covers several cases:
 - **bind failure** — binding an in-use address exits non-zero without panicking.
 - **threads** — the proxy serves with a non-default `--threads` count and
   rejects `0`.
+- **manual-testing peers** — the byte renderings of [`scripts/peer.py`](scripts/peer.py)
+  match the `RENDERINGS` that the relay + logging cases check against the binary,
+  for all 256 byte values, and every recipe still parses and prints. Each `ci` recipe runs end to end:
+  - the peer server, the proxy and the peer client start on ephemeral ports, in
+    that order;
+  - the server and the proxy are each awaited through their ready line (no probe
+    connection), then the client runs to completion;
+  - the recipe's `expect`/`absent` lines are asserted per terminal, along with
+    clean peer exits and the client being the proxy's `[#1]` and only connection.
+
+  See [Manual testing](#manual-testing).
 - **Ctrl-C** — SIGINT shuts the proxy down with exit code `0` (POSIX only).
 
 It uses only the Python standard library (no `pip` packages), so it runs the same
@@ -436,6 +457,28 @@ python3 scripts/integration_test.py
 By default it builds the debug binary first; set `LOGGED_TCP_PROXY_BIN` to a
 prebuilt binary to skip the build. In CI it runs as the dedicated `integration`
 job.
+
+## Manual testing
+
+[`scripts/peer.py`](scripts/peer.py) is the peer server (`127.0.0.1:20582`, the
+proxy's `-r`) and client (`127.0.0.1:20502`, the proxy's `-b`) to run in separate
+terminals around `cargo run -- -b 127.0.0.1:20502 -r 127.0.0.1:20582 -p
+milliseconds`. [CONTRIBUTING.md](CONTRIBUTING.md#manual-testing) is the user guide.
+Invariants to keep when editing it:
+
+- **The proxy's output shape.**
+  - `<`/`>` keep the proxy's meaning in every terminal (client → server / server →
+    client), never "sent"/"received".
+  - Payloads render exactly like the proxy's `-f`/`-s`. The black-box test checks
+    every byte value against the renderings it pins on the binary.
+- **No probe connections.** The client retries only a *refused* connect, so the
+  first client is the proxy's `[#1]`.
+- **No accidental RSTs.** The default ending sends FIN and waits for the other
+  side's FIN before closing; only `rst` resets. The reader thread polls with
+  `select()` and is stopped before any close, because closing a socket under a
+  blocked `recv()` can delay its FIN/RST.
+- **Recipes are data.** `RECIPES` is what `peer.py recipes` prints. Set
+  `ci: True` only for scenarios whose output is deterministic on every OS.
 
 ## Continuous integration
 
@@ -451,8 +494,9 @@ job.
 - **build_and_test** — `cargo build --all-targets` then `cargo test` on
   ubuntu/macos/windows × stable/beta/nightly.
 - **integration** — builds the binary and runs the black-box
-  [`scripts/integration_test.py`](scripts/integration_test.py) on
-  ubuntu/macos/windows (the Ctrl-C case is skipped on Windows).
+  [`scripts/integration_test.py`](scripts/integration_test.py), including the
+  manual-testing peers' `ci` recipes, on ubuntu/macos/windows (the Ctrl-C case is
+  skipped on Windows).
 - **coverage** — `cargo llvm-cov` (source-based LLVM coverage, stable toolchain +
   the `llvm-tools` component) on ubuntu, printing a per-file summary to the job
   summary. It always passes `--ignore-filename-regex 'src/tests'`: the tests are
