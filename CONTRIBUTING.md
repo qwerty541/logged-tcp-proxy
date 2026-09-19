@@ -118,17 +118,16 @@ side:
   `[#N] Incoming connection from 127.0.0.1:PORT` line. The server's `[s:PORT]` is the
   proxy's outgoing side.
 - The peers also show what the proxy cannot: `-` FIN sent, `=` EOF received, `x`
-  socket closed (and how), `!` socket error.
+  socket closed (and how), `!` an error (of the socket, or a refused command).
 
 Besides typed input, both peers run scripted **steps**:
 - sending: text with escapes (`hello\n`), raw bytes (`x:00:01:6f:ff`);
-- pacing: `sleep:0.5`, `read`, `hold`;
-- closing: `shut` (half-close), then an ending: `close` (graceful, the default), or
-  `abort` / `rst` to close abruptly (`rst` always sends RST).
+- waiting: `sleep:0.5`, `read` (for data), `hold` (for the other side's FIN);
+- closing: `shut` (half-close), then an ending: `close` (graceful, the default) or
+  `rst` (always sends RST).
 
 The client takes steps as arguments; the server takes them as `--on-accept` /
-`--on-eof` hooks. `--split N --gap S` sends every payload in N-byte writes. See
-`python3 scripts/peer.py client --help`.
+`--on-eof` hooks. See `python3 scripts/peer.py client --help`.
 
 Ready-made scenarios include banners, half-close, resets, the idle timeout,
 `--max-connections`, a destination that is down, and a MODBUS poll:
@@ -143,16 +142,19 @@ the commands they print keep working.
 
 Tips:
 
+- Start the server (T2) before the client (T3): the proxy connects to the
+  destination only when a client arrives, and does not retry. The client may start
+  before the proxy: it retries a refused connection for 15 s. It never opens a probe
+  connection, so the first client is the proxy's `[#1]`.
 - Stop the proxy with Ctrl-C: it logs its shutdown line and exits with status 0.
-  Closing its terminal or `kill` sends SIGTERM instead, which skips that.
-- The client retries a refused connection for 15 s, so the terminals can be started
-  in any order. It never opens a probe connection, so the first client is the
-  proxy's `[#1]`.
+  `kill` (SIGTERM) or closing its terminal (SIGHUP) ends it without that.
 - To merge the three logs into one timeline:
   1. Use the same `-p` everywhere; `microseconds` avoids ties.
-  2. `tee` each terminal into a file. The proxy logs to stderr, so use
-     `cargo run -- ... 2>&1 | tee proxy.log`.
-  3. Run `sort proxy.log server.log client.log`.
+  2. `tee -i` each terminal into a file. The proxy logs to stderr, so use
+     `cargo run -- ... 2>&1 | tee -i proxy.log`. (`-i` keeps `tee` alive through
+     Ctrl-C, so the final lines are still written.)
+  3. Run `sort -s -k1,1 client.log proxy.log server.log`: a stable sort on the
+     timestamp alone.
 
 ### Linting & Formatting
 
