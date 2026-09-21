@@ -121,13 +121,33 @@ side:
   socket closed (and how), `!` an error (of the socket, or a refused command).
 
 Besides typed input, both peers run scripted **steps**:
-- sending: text with escapes (`hello\n`), raw bytes (`x:00:01:6f:ff`);
+- sending: text with escapes (`hello\n`), raw bytes (`x:00:01:6f:ff`), random bytes
+  (`rand:16`, or `rand:4-64` for a random length);
 - waiting: `sleep:0.5`, `read` (for data), `hold` (for the other side's FIN);
 - closing: `shut` (half-close), then an ending: `close` (graceful, the default) or
   `rst` (always sends RST).
 
 The client takes steps as arguments; the server takes them as `--on-accept` /
 `--on-eof` hooks. See `python3 scripts/peer.py client --help`.
+
+In the interactive client, a typed line is sent as-is, and `/STEP` runs one step
+(`/x:00 01 6f ff`, `/rand:16`, `/shut`, `/rst`). To repeat something, use
+`/loop [COUNT] [STEP ...]`:
+
+```text
+hello                       send it once
+/loop                       resend that line every second, until Ctrl-C
+/loop 5 rand:16             send 16 random bytes, five times, a second apart
+/loop ping sleep:0.2        send "ping" (no line ending) five times a second
+/loop x:00:01:6f:ff read    send a frame, read the answer, once a second
+/loop 'two words\n'         quote what has spaces; \n adds the line ending
+```
+
+Ctrl-C stops a running loop and returns you to the prompt; at the prompt it quits.
+Only a `sleep:` step sets the pace: without one, a loop waits a second between
+rounds, so it cannot flood by accident. What you type while a loop runs is executed
+once it ends. `/quit` (or Ctrl-D) ends the connection gracefully, and the same steps
+work as command-line arguments: `python3 scripts/peer.py client rand:16 sleep:1 loop`.
 
 Ready-made scenarios include banners, half-close, resets, the idle timeout,
 `--max-connections`, a destination that is down, and a MODBUS poll:
