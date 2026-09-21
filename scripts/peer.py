@@ -26,6 +26,7 @@ import argparse
 import math
 import os
 import queue
+import random
 import re
 import select
 import shlex
@@ -68,10 +69,11 @@ LEGEND = """output: [<time> <role>] [<connection>] <kind> <details>
   !  an error (of the socket, or a refused command)     *  anything else
   [c:PORT]: PORT is the one in the proxy's "Incoming connection from" line."""
 
-STEPS_HELP = r"""steps (client arguments, server --on-accept/--on-eof, most as interactive /STEP):
+STEPS_HELP = r"""steps (client arguments, server --on-accept/--on-eof, or /STEP):
   TEXT       send text; escapes \n \r \t \0 \\ \xNN (no newline is added)
   t:TEXT     send text that would otherwise read as a step (t:read, t:http://x)
   x:HEX      send raw bytes: x:00:01:6f:ff (':', ' ', '-' and ',' are ignored)
+  rand:N     send N random bytes; rand:MIN-MAX picks the length per send
   sleep:S    pause S seconds (fractions allowed)
   read       wait for data from the other side (takes all that has arrived)
   shut       half-close: send FIN, keep reading
@@ -79,13 +81,26 @@ STEPS_HELP = r"""steps (client arguments, server --on-accept/--on-eof, most as i
   close      graceful end: FIN, wait for the other side's FIN, then close
              (what happens anyway after the last step)
   rst        reset: SO_LINGER 0, then close - always sends RST
-  loop       repeat all steps; must be last and needs a sleep: or read step.
+  loop       repeat all steps; must be last and needs a sleep: or read step
+             (a read-paced loop runs as fast as the answers come back).
              Stops once the other side has closed."""
 
-REPL_HELP = """interactive client: a typed line is sent as-is plus the --eol ending;
-//text sends /text; /STEP runs one step other than TEXT or loop (e.g. /x:00 01 6f ff,
-/t:no-newline, /shut, /rst). At a terminal, /read waits for data that arrives after it.
-Ctrl-D (Ctrl-Z Enter on Windows) ends gracefully, Ctrl-C quits."""
+REPL_HELP = r"""interactive client: a typed line is sent as-is plus the --eol ending;
+//text sends /text; /STEP runs one step other than TEXT (e.g. /x:00 01 6f ff,
+/t:no-newline, /rand:16, /read, /shut, /rst). At a terminal, /read waits for
+data that arrives after it. /quit, /exit (or Ctrl-D, Ctrl-Z Enter on Windows)
+end gracefully; Ctrl-C quits at the prompt and stops a running loop.
+
+  /loop [COUNT] [STEP ...]  repeat steps until Ctrl-C, or COUNT times. Without
+                            steps it repeats what you sent last; without a
+                            sleep: step it waits a second between rounds.
+                            What you type meanwhile runs once the loop ends.
+examples:
+  /loop                     resend the last thing every second
+  /loop 5 rand:16           16 random bytes, five times, a second apart
+  /loop ping sleep:0.5      send "ping" (no line ending) twice a second
+  /loop x:00:01:6f:ff read  send a frame, read the answer, once a second
+  /loop 'two words\n'       quote what has spaces; \n adds the line ending"""
 
 
 # --- Output ------------------------------------------------------------------------
@@ -213,6 +228,15 @@ def parse_step(token):
     name, value = prefixed.groups()
     if name == "sleep":
         return ("sleep", duration(value))
+    if name == "rand":
+        sizes = re.fullmatch(r"([0-9]{1,5})(?:-([0-9]{1,5}))?", value)
+        if not sizes:
+            raise StepError("bad size in %r (bytes, e.g. rand:16 or rand:4-64)" % token)
+        low, high = int(sizes.group(1)), int(sizes.group(2) or sizes.group(1))
+        if not 0 < low <= high <= 65535:
+            raise StepError("bad size in %r (1 to 65535 bytes, MIN no larger than MAX)"
+                            % token)
+        return ("rand", (low, high))
     if name == "t":
         data = unescape(value)
     elif name == "x":
@@ -239,13 +263,24 @@ def parse_steps(tokens):
     return steps
 
 
+def split_tokens(text):
+    """Split a typed command line into step tokens: quotes group words, while
+    backslash escapes survive for `unescape` (shlex's POSIX mode would eat
+    them, so `hello\\n` would arrive as `hellon`)."""
+    tokens = []
+    for token in shlex.split(text, posix=False):
+        if len(token) > 1 and token[0] == token[-1] and token[0] in "'\"":
+            token = token[1:-1]
+        tokens.append(token)
+    return tokens
+
+
 def parse_command(command):
     """An interactive `/COMMAND` (given without the slash) -> one step. Only
-    keywords and prefixed steps are commands, so a typo such as /quit is
-    reported instead of being sent as text."""
+    keywords and prefixed steps are commands, so a typo such as /sned is
+    reported instead of being sent as text. (`loop` never reaches this: both
+    callers route a `loop ...` line to parse_loop first.)"""
     step = parse_step(command)
-    if step[0] == "loop":
-        raise StepError("loop only works in a step list")
     if step[0] == "send" and not re.match(r"[tx]:", command):
         raise StepError("unknown command /%s (a plain line is sent as typed; "
                         "/t:TEXT sends text without the line ending)" % command)
@@ -432,6 +467,8 @@ def run_steps(conn, steps):
         for kind, arg in steps:
             if kind == "send":
                 conn.send(arg)
+            elif kind == "rand":
+                conn.send(os.urandom(random.randint(arg[0], arg[1])))
             elif kind == "sleep":
                 time.sleep(arg)
             elif kind == "read":
@@ -543,6 +580,70 @@ def connect(opts, log):
             return None
 
 
+def parse_loop(command):
+    """An interactive `loop [COUNT] [STEP ...]` -> (count or None, tokens). The
+    tokens stay unparsed so the caller can echo back what was typed."""
+    tokens = split_tokens(command)[1:]
+    count = None
+    if tokens and re.match(r"[-+0-9]", tokens[0]):
+        if tokens[0] == "0":
+            raise StepError("/loop 0 would do nothing")
+        if not re.fullmatch(r"[0-9]{1,6}", tokens[0]):
+            raise StepError("bad count %r (1 to 999999; to send it as text write t:%s)"
+                            % (tokens[0], tokens[0]))
+        count = int(tokens.pop(0))
+    looped = next((token for token in tokens if token in ENDINGS or token == "loop"), None)
+    if looped == "loop":
+        raise StepError("/loop already repeats: drop the trailing 'loop' step")
+    if looped:
+        raise StepError("%r cannot be looped; use /%s on its own" % (looped, looped))
+    return count, tokens
+
+
+def repl_loop(conn, log, command, interactive, last):
+    """Run an interactive `/loop [COUNT] [STEP ...]`: repeat the steps (what was
+    sent last, when none are given) until Ctrl-C or COUNT rounds, or until the
+    connection can no longer carry them. Ctrl-C returns to the prompt; it does
+    not end the connection."""
+    count, tokens = parse_loop(command)
+    if tokens:
+        steps, shown = parse_steps(tokens), " ".join(tokens)
+    elif last:
+        steps, shown = last
+    else:
+        raise StepError("nothing sent yet: give the steps to repeat, e.g. /loop ping")
+    # Only sleep: paces a loop. A `read` returns as soon as the other side
+    # answers, which on loopback is immediately - that is a flood, not a pace.
+    pace = None if any(kind == "sleep" for kind, _ in steps) else 1.0
+    log.event(conn.tag, "*", "looping %s%s%s (Ctrl-C stops the loop)"
+              % (shown, "" if pace is None else " every %gs" % pace,
+                 "" if count is None else ", %d times" % count))
+    sends = any(kind in ("send", "rand") for kind, _ in steps)
+    if interactive and any(kind == "read" for kind, _ in steps):
+        conn.drop_received()  # pair each round's read with that round's answer
+    rounds = 0
+    try:
+        while count is None or rounds < count:
+            if conn.finished.is_set():
+                log.event(conn.tag, "*", "loop stopped: the other side has closed")
+                break
+            # Nothing this side sends can leave once its FIN is out, so a loop
+            # that sends would spin, or block in a read for an answer to a
+            # request that was never delivered.
+            if conn.shut_sent and sends:
+                log.event(conn.tag, "*", "loop stopped: this side has already sent FIN")
+                break
+            rounds += 1  # counted as it starts, so Ctrl-C reports the round you saw
+            run_steps(conn, steps)
+            if pace is not None and (count is None or rounds < count):
+                time.sleep(pace)
+        else:
+            log.event(conn.tag, "*", "loop finished (%d round(s))" % rounds)
+    except KeyboardInterrupt:
+        log.event(conn.tag, "*", "loop stopped in round %d" % rounds)
+    return steps, shown  # a later bare /loop repeats what this one ran
+
+
 def repl(conn, log, eol):
     """Interactive mode: each typed line is sent as-is plus `eol`; `/STEP` runs
     a step. End of input (Ctrl-D) ends the connection gracefully."""
@@ -555,8 +656,10 @@ def repl(conn, log, eol):
     # Decoded (and re-encoded below) as UTF-8 whatever the locale, with bytes
     # that are not valid UTF-8 carried through: piped input goes out unchanged.
     sys.stdin.reconfigure(encoding="utf-8", errors="surrogateescape")
-    log.event(None, "*", "type a line to send it; /help for more; "
-                         "Ctrl-D ends gracefully, Ctrl-C quits")
+    log.event(None, "*", "type a line to send it; /loop repeats it, /rand:16 sends "
+                         "random bytes; /help for more, Ctrl-D ends, Ctrl-C quits")
+    hinted = False
+    last = None  # what a bare /loop repeats: (steps, how to show them)
     while True:
         try:
             line = input()
@@ -564,14 +667,40 @@ def repl(conn, log, eol):
             return "close"
         if not line.startswith("/") or line.startswith("//"):
             text = line[1:] if line.startswith("//") else line
-            conn.send(text.encode("utf-8", "surrogateescape") + eol)
+            payload = text.encode("utf-8", "surrogateescape") + eol
+            conn.send(payload)
+            last = ([("send", payload)], preview(payload))
+            if interactive and not hinted:  # the one thing people look for first
+                hinted = True
+                log.event(None, "*", "tip: /loop alone repeats that line every second; "
+                                     "/loop 5 rand:16 sends random bytes 5 times")
             continue
-        if line == "/help":
-            emit("\n\n".join((REPL_HELP, STEPS_HELP, LEGEND)))
+        if line == "/help" or line.startswith("/help "):
+            # Just the interactive part by default: the whole thing is 38 rows,
+            # which scrolls off a standard terminal - taking /loop with it.
+            topic = line[5:].strip()
+            if not topic:
+                emit(REPL_HELP + "\n\n  /help steps  the step language"
+                                 "      /help all  everything")
+            elif topic == "steps":
+                emit(STEPS_HELP)
+            elif topic == "all":
+                emit("\n\n".join((LEGEND, STEPS_HELP, REPL_HELP)))
+            else:
+                log.event(None, "!", "no help for %r (try /help, /help steps, /help all)"
+                          % topic)
             continue
+        if line in ("/quit", "/exit"):
+            return "close"
         try:
+            if re.match(r"loop(\s|\Z)", line[1:]):
+                last = repl_loop(conn, log, line[1:], interactive, last) or last
+                continue
             step = parse_command(line[1:])
         except StepError as error:
+            log.event(None, "!", "%s; /help lists the commands" % error)
+            continue
+        except ValueError as error:  # e.g. an unbalanced quote in shlex.split
             log.event(None, "!", "%s; /help lists the commands" % error)
             continue
         if step[0] == "read":
@@ -582,6 +711,8 @@ def repl(conn, log, eol):
             if not conn.read():
                 log.event(conn.tag, "*", "nothing more to read: the other side has finished")
             continue
+        if step[0] in ("send", "rand"):
+            last = ([step], line[1:])  # a bare /loop repeats this, rand freshly
         ending = run_steps(conn, [step])
         if ending:
             return ending
@@ -638,7 +769,9 @@ RECIPES = [
         "server": [],
         "client": [],
         "look": [
-            "T3: type lines; /x:00 01 6f ff sends raw bytes; /help lists everything.",
+            "T3: type lines; /x:00 01 6f ff sends raw bytes; /loop repeats the last",
+            "line every second and /loop 5 rand:16 sends random bytes five times",
+            "(Ctrl-C stops a loop, not the client); /help lists everything.",
             "The same bytes carry the same arrow in all three terminals: < is",
             "client -> server, > is server -> client. The server replies 're: ' + data,",
             "so the two directions differ. Try -f decimal (or upperhex, octal, binary)",
@@ -683,6 +816,29 @@ RECIPES = [
             "client": ["< 68:65:6c:6c:6f:0a", "- FIN sent", "= EOF", "x closed"],
             "proxy": ["[#1] < 68:65:6c:6c:6f:0a", "[#1] x Deallocated."],
             "server": ["< 68:65:6c:6c:6f:0a", "= EOF", "x closed"],
+        },
+    },
+    {
+        "name": "repeat",
+        "about": "Repeat a payload on a timer, and send random bytes.",
+        "proxy": [],
+        "server": ["--mode", "sink"],
+        "client": [],
+        "stdin": "ping\n/loop 2\n/loop 3 rand:4 sleep:0.2\n",
+        "look": [
+            "Typed interactively, this is: send 'ping', then '/loop 2' to repeat it",
+            "twice, a second apart, then '/loop 3 rand:4 sleep:0.2' for three 4-byte",
+            "random payloads. T1 shows one < line per send, the random ones differing",
+            "every time. Without a count, /loop runs until Ctrl-C.",
+        ],
+        "ci": True,
+        "expect": {
+            "client": ["< 70:69:6e:67:0a", "* looping", "< 70:69:6e:67:0a",
+                       "< 70:69:6e:67:0a", "loop finished (2 round(s))",
+                       "* looping rand:4 sleep:0.2, 3 times",
+                       "loop finished (3 round(s))", "x closed: sent 27 B, received 0 B"],
+            "proxy": ["[#1] < 70:69:6e:67:0a", "[#1] x Deallocated."],
+            "server": ["< 70:69:6e:67:0a", "x closed: sent 0 B, received 27 B"],
         },
     },
     {
@@ -843,9 +999,17 @@ def check_recipes():
                 if recipe[role] is not None:
                     prepare(parser.parse_args([role] + recipe[role]))
             for line in recipe.get("stdin", "").splitlines():
-                if line.startswith("/") and not line.startswith("//"):
+                if not line.startswith("/") or line.startswith("//"):
+                    continue
+                if re.match(r"loop(\s|\Z)", line[1:]):
+                    count, tokens = parse_loop(line[1:])
+                    parse_steps(tokens)  # the steps must parse too
+                    if count is None:
+                        raise StepError("a piped /loop needs a COUNT, or the client "
+                                        "would never reach the end of its input")
+                elif line not in ("/help", "/quit", "/exit"):
                     parse_command(line[1:])
-        except (StepError, SystemExit) as error:
+        except (ValueError, SystemExit) as error:
             raise ValueError("recipe %r does not parse: %s" % (recipe["name"], error)) from None
 
 
