@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Added `scripts/peer.py`, a scriptable TCP client and server (standard-library Python) for manually testing the proxy from a clone of the repository. They log their traffic in the proxy's own format, and `python3 scripts/peer.py recipes` lists ready-made three-terminal scenarios. This is repository tooling only, not part of the published crate.
+- Added `scripts/peer.py`, a scriptable TCP client and server (standard-library Python) for manually testing the proxy from a clone of the repository. They log their traffic in the proxy's own format, and `python3 scripts/peer.py recipes` lists ready-made three-terminal scenarios. The interactive client repeats traffic with `/loop [COUNT] [STEP ...]` (Ctrl-C stops the loop, not the client) and sends random payloads with the `rand:16` step. This is repository tooling only, not part of the published crate.
 
 ### Documentation
 
