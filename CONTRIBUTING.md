@@ -10,6 +10,7 @@
   - [Prerequisites](#prerequisites)
   - [Building](#building)
   - [Running](#running)
+  - [Manual testing](#manual-testing)
   - [Linting \& Formatting](#linting--formatting)
   - [Testing](#testing)
 - [Project Structure](#project-structure)
@@ -70,10 +71,10 @@ cargo run -- [OPTIONS]
 Common quick runs:
 
 ```bash
-# Proxy from local 127.0.0.1:9000 to 127.0.0.1:9100 with lower-hex payload logging
+# Proxy from local 127.0.0.1:20502 to 127.0.0.1:20582 with lower-hex payload logging
 cargo run -- \
-  --bind-listener-addr 127.0.0.1:9000 \
-  --remote-addr 127.0.0.1:9100 \
+  --bind-listener-addr 127.0.0.1:20502 \
+  --remote-addr 127.0.0.1:20582 \
   --formatting lowerhex \
   --separator : \
   --precision seconds \
@@ -81,13 +82,99 @@ cargo run -- \
 
 # Decimal formatting with millisecond timestamps
 cargo run -- \
-  --bind-listener-addr 127.0.0.1:8000 \
-  --remote-addr 127.0.0.1:8080 \
+  --bind-listener-addr 127.0.0.1:20502 \
+  --remote-addr 127.0.0.1:20582 \
   --formatting decimal \
   --separator , \
-  --precision milliseconds \
-  --level info
+  --precision milliseconds
 ```
+
+### Manual testing
+
+To watch the proxy at work you need something on both sides of it.
+[`scripts/peer.py`](scripts/peer.py) provides both: a scriptable **server** (the
+destination) and a **client**. It uses only the Python standard library (3.8+), so
+there is nothing to install. The default addresses match the proxy command below,
+so three terminals are all you need:
+
+```bash
+# T1: the proxy, between the client (port 20502) and the server (port 20582)
+cargo run -- -b 127.0.0.1:20502 -r 127.0.0.1:20582 -p milliseconds
+
+# T2: the destination; by default it replies "re: " + whatever it receives
+python3 scripts/peer.py server
+
+# T3: the client; type a line to send it, /help lists the steps, Ctrl-D ends
+python3 scripts/peer.py client
+```
+
+The peers log in the proxy's own format, so the three terminals can be read side by
+side:
+
+- `<` always means client → server bytes and `>` server → client bytes, in every
+  terminal. Payloads are rendered with the same `-f`/`-s` options as the proxy (the
+  peers accept them too).
+- The client's tag `[c:PORT]` is the port in the proxy's
+  `[#N] Incoming connection from 127.0.0.1:PORT` line. The server's `[s:PORT]` is the
+  proxy's outgoing side.
+- The peers also show what the proxy cannot: `-` FIN sent, `=` EOF received, `x`
+  socket closed (and how), `!` an error (of the socket, or a refused command).
+
+Besides typed input, both peers run scripted **steps**:
+- sending: text with escapes (`hello\n`), raw bytes (`x:00:01:6f:ff`), random bytes
+  (`rand:16`, or `rand:4-64` for a random length);
+- waiting: `sleep:0.5`, `read` (for data), `hold` (for the other side's FIN);
+- closing: `shut` (half-close), then an ending: `close` (graceful, the default) or
+  `rst` (always sends RST).
+
+The client takes steps as arguments; the server takes them as `--on-accept` /
+`--on-eof` hooks. See `python3 scripts/peer.py client --help`.
+
+In the interactive client, a typed line is sent as-is, and `/STEP` runs one step
+(`/x:00 01 6f ff`, `/rand:16`, `/shut`, `/rst`). To repeat something, use
+`/loop [COUNT] [STEP ...]`:
+
+```text
+hello                       send it once
+/loop                       resend that line every second, until Ctrl-C
+/loop 5 rand:16             send 16 random bytes, five times, a second apart
+/loop ping sleep:0.2        send "ping" (no line ending) five times a second
+/loop x:00:01:6f:ff read    send a frame, read the answer, once a second
+/loop 'two words\n'         quote what has spaces; \n adds the line ending
+```
+
+Ctrl-C stops a running loop and returns you to the prompt; at the prompt it quits.
+Only a `sleep:` step sets the pace: without one, a loop waits a second between
+rounds, so it cannot flood by accident. What you type while a loop runs is executed
+once it ends. `/quit` (or Ctrl-D) ends the connection gracefully, and the same steps
+work as command-line arguments: `python3 scripts/peer.py client rand:16 sleep:1 loop`.
+
+Ready-made scenarios include banners, half-close, resets, the idle timeout,
+`--max-connections`, a destination that is down, and a MODBUS poll:
+
+```bash
+python3 scripts/peer.py recipes             # list them
+python3 scripts/peer.py recipes half-close  # the three commands, and what to look for
+```
+
+The deterministic recipes also run in CI as part of `scripts/integration_test.py`, so
+the commands they print keep working.
+
+Tips:
+
+- Start the server (T2) before the client (T3): the proxy connects to the
+  destination only when a client arrives, and does not retry. The client may start
+  before the proxy: it retries a refused connection for 15 s. It never opens a probe
+  connection, so the first client is the proxy's `[#1]`.
+- Stop the proxy with Ctrl-C: it logs its shutdown line and exits with status 0.
+  `kill` (SIGTERM) or closing its terminal (SIGHUP) ends it without that.
+- To merge the three logs into one timeline:
+  1. Use the same `-p` everywhere; `microseconds` avoids ties.
+  2. `tee -i` each terminal into a file. The proxy logs to stderr, so use
+     `cargo run -- ... 2>&1 | tee -i proxy.log`. (`-i` keeps `tee` alive through
+     Ctrl-C, so the final lines are still written.)
+  3. Run `sort -s -k1,1 client.log proxy.log server.log`: a stable sort on the
+     timestamp alone.
 
 ### Linting & Formatting
 
@@ -105,7 +192,9 @@ cargo test
 ```
 
 There is also a black-box test that drives the **compiled binary** end to end. It
-uses only the Python standard library (no `pip` packages):
+uses only the Python standard library (no `pip` packages). It also runs the
+deterministic [manual-testing](#manual-testing) recipes, so run it after changing
+`scripts/peer.py` or the proxy's console output:
 
 ```bash
 python3 scripts/integration_test.py
@@ -123,6 +212,7 @@ This is a **binary-only** crate — there is intentionally no `lib` target.
   - `main.rs` — binary entry point, async runtime construction, and logger initialization
   - `tests.rs` + `tests/` — in-crate integration tests (compiled only under `#[cfg(test)]`), grouped into submodules by behavior; `tests/helpers.rs` holds the shared test helpers
 - `scripts/integration_test.py` — black-box test that drives the compiled binary
+- `scripts/peer.py` — manual-testing peers: a scriptable client and server to run around the proxy, plus ready-made scenarios (`recipes`)
 - `Cargo.toml` — crate metadata (edition 2024, MSRV 1.85.1, licenses)
 - `README.md` — usage, installation, and reference docs
 - `CHANGELOG.md` — release notes
@@ -162,6 +252,7 @@ This is a **binary-only** crate — there is intentionally no `lib` target.
   - `cargo fmt --all`
   - `cargo clippy --all-targets --all-features -- -D warnings`
   - `cargo test`
+  - `python3 scripts/integration_test.py`, if you changed `scripts/` or the proxy's console output
 
 ## Security
 
