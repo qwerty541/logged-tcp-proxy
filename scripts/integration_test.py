@@ -231,11 +231,28 @@ def start_proxy(binary, remote_port, level="debug", extra_args=()):
     return proxy, proxy_port
 
 
+def logged_tokens(output, separator, arrow="<"):
+    """Every rendered byte of `output`'s `arrow` payload lines, in order. The
+    proxy logs one line per read, so one payload can span several lines."""
+    tokens = []
+    marker = "] %s " % arrow
+    for line in output.splitlines():
+        at = line.find(marker)
+        if at >= 0:
+            tokens.extend(line[at + len(marker):].split(separator))
+    return tokens
+
+
 def run_case(binary, formatting, separator, render_byte):
-    """Run one end-to-end case for a given `--formatting`/`--separator`."""
+    """Run one end-to-end case for a given `--formatting`/`--separator`.
+
+    The payload is every byte value, so the binary itself pins how each of the
+    256 bytes is rendered in this format (which is what makes the peers' copy of
+    the renderings, checked against `RENDERINGS` in test_peer_recipes, mean
+    something)."""
     echo_server, echo_port = start_echo_server()
     proxy_port = free_port()
-    payload = bytes([0x00, 0x01, 0x6F, 0x03, 0xFF, 0x10, 0x2A])
+    payload = bytes(range(256))
 
     proxy = subprocess.Popen(
         [
@@ -275,11 +292,20 @@ def run_case(binary, formatting, separator, render_byte):
         output = stop_proxy(proxy)
         echo_server.close()
 
-    expected = separator.join(render_byte(b) for b in payload)
-    if expected not in output:
-        fail("[%s] payload not logged as %r" % (formatting, expected), output)
+    # Compared as rendered text, not as parsed numbers, so a lost zero-padding
+    # ("8" for "08") fails. Joined across lines: the payload may span reads.
+    expected = [render_byte(b) for b in payload]
+    logged = logged_tokens(output, separator)
+    if logged != expected:
+        differs = next((i for i, token in enumerate(logged) if token != expected[i]),
+                       min(len(logged), len(expected)))
+        fail("[%s] the payload was logged as %d tokens, expected %d; first difference at "
+             "byte %d: %r vs %r" % (formatting, len(logged), len(expected), differs,
+                                    logged[differs:differs + 4], expected[differs:differs + 4]),
+             output)
 
-    print("OK [%s] relayed %d bytes and logged them as %s" % (formatting, len(payload), expected))
+    print("OK [%s] relayed all %d byte values and logged each of them (%s ... %s)"
+          % (formatting, len(payload), separator.join(expected[:3]), expected[-1]))
 
 
 def start_asymmetric_server(reply):
@@ -1004,6 +1030,8 @@ def run_peer_recipe(binary, peer, recipe):
     def all_output():
         return "".join("---- %s ----\n%s" % (role, output(role)) for role in processes)
 
+    proxy_rc = None  # set below, before the cleanup terminates the proxy
+
     def wait_for(role, pattern):
         deadline = time.monotonic() + START_TIMEOUT
         while time.monotonic() < deadline:
@@ -1034,6 +1062,9 @@ def run_peer_recipe(binary, peer, recipe):
             if missing_in_order(output("proxy"), recipe["expect"]["proxy"]) is None:
                 break
             time.sleep(0.05)
+        # Before the cleanup terminates it: a proxy that exited on its own (a
+        # panic, say) after printing the expected lines must not pass.
+        proxy_rc = processes["proxy"].poll()
     finally:
         for process in processes.values():
             if process.poll() is None:
@@ -1046,6 +1077,9 @@ def run_peer_recipe(binary, peer, recipe):
         for thread, _ in drains.values():
             thread.join(timeout=5)
 
+    if proxy_rc is not None:
+        fail("[%s] the proxy exited on its own (rc=%s) instead of serving until the end"
+             % (case, proxy_rc), all_output())
     for role in ("client", "server"):
         if processes[role].returncode != 0 or "Traceback" in output(role):
             fail("[%s] the %s exited with rc=%s" % (case, role, processes[role].returncode),
