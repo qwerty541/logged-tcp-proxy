@@ -396,7 +396,11 @@ covers several cases:
 - **relay + logging** — bytes are relayed both ways **and** the proxy prints the
   payload to the console in the requested format. One case per `--formatting`
   value (`lowerhex`, `upperhex`, `decimal`, `octal`, `binary`), since printing the
-  payload is the whole point of the tool.
+  payload is the whole point of the tool. Each case relays **all 256 byte values**
+  and compares the logged tokens (as text, so a lost zero-padding fails) with the
+  expected rendering, joined across lines because one payload may span reads. That
+  is what pins the `RENDERINGS` table on the binary, which the peers' own
+  renderings are then checked against.
 - **direction markers + no double logging** — against a remote whose reply differs
   from the request (an echo server cannot distinguish the directions), `<` marks
   the client's bytes and `>` the remote's, the markers are not swapped, and each
