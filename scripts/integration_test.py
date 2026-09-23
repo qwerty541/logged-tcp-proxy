@@ -297,7 +297,10 @@ def run_case(binary, formatting, separator, render_byte):
     expected = [render_byte(b) for b in payload]
     logged = logged_tokens(output, separator)
     if logged != expected:
-        differs = next((i for i, token in enumerate(logged) if token != expected[i]),
+        # Paired first, then the length boundary: with a duplicated payload
+        # `logged` is the longer list, and indexing `expected` by its position
+        # would raise instead of reporting the difference.
+        differs = next((i for i, (got, want) in enumerate(zip(logged, expected)) if got != want),
                        min(len(logged), len(expected)))
         fail("[%s] the payload was logged as %d tokens, expected %d; first difference at "
              "byte %d: %r vs %r" % (formatting, len(logged), len(expected), differs,
@@ -1106,9 +1109,9 @@ def run_peer_recipe(binary, peer, recipe):
 def test_peer_recipes(binary):
     """The manual-testing peers (scripts/peer.py) keep working against the real
     binary: their byte renderings match RENDERINGS (which the relay + logging
-    cases check against the binary) for all 256 byte values, every recipe still
-    parses and prints, and every recipe marked `ci` runs for real (see
-    run_peer_recipe)."""
+    cases check against the binary) for all 256 byte values, a loop must still
+    be paced, every recipe still parses and prints, and every recipe marked `ci`
+    runs for real (see run_peer_recipe)."""
     peer = load_peer()
     if set(peer.FORMATS) != set(RENDERINGS):
         fail("[peer] peer.py's -f values %s differ from the proxy's %s"
@@ -1118,6 +1121,26 @@ def test_peer_recipes(binary):
             if peer.FORMATS[formatting](byte) != render(byte):
                 fail("[peer] peer.py renders byte %d as %r with -f %s; the proxy prints %r"
                      % (byte, peer.FORMATS[formatting](byte), formatting, render(byte)))
+
+    # A loop must be paced by a `read` or a positive `sleep:`; `sleep:0` would
+    # spin as fast as the CPU and the socket allow, so it must be refused (and
+    # must not count as pacing for the interactive /loop either).
+    for steps in (["ping", "sleep:0", "loop"], ["sleep:0", "loop"]):
+        try:
+            peer.parse_steps(steps)
+            fail("[peer] %s was accepted, but sleep:0 paces nothing" % " ".join(steps))
+        except peer.StepError:
+            pass
+    for steps in (["ping", "sleep:0.2", "loop"], ["x:00", "read", "loop"]):
+        try:
+            peer.parse_steps(steps)
+        except peer.StepError as error:
+            fail("[peer] %s must stay valid: %s" % (" ".join(steps), error))
+    if peer.paces([("sleep", 0.0)]) or not peer.paces([("sleep", 0.5)]):
+        fail("[peer] only a positive sleep: may pace a loop")
+    if not peer.paces([("read", None)]):
+        fail("[peer] a read step must count as pacing a loop")
+
     try:
         peer.check_recipes()
     except ValueError as error:

@@ -80,7 +80,8 @@ STEPS_HELP = r"""steps (client arguments, server --on-accept/--on-eof, or /STEP)
   hold       wait until the other side has sent FIN
   close      graceful end: FIN, wait for the other side's FIN, then close
              (what happens anyway after the last step)
-  rst        reset: SO_LINGER 0, then close - always sends RST
+  rst        reset: SO_LINGER 0, then close - an RST, unless the OS refuses
+             to arm it, which the closing line then says
   loop       repeat all steps; must be last, and needs a read step or a
              positive sleep: to pace it (a read-paced loop runs as fast as
              the answers come back). Stops once the other side has closed."""
