@@ -125,7 +125,8 @@ Besides typed input, both peers run scripted **steps**:
   (`rand:16`, or `rand:4-64` for a random length);
 - waiting: `sleep:0.5`, `read` (for data), `hold` (for the other side's FIN);
 - closing: `shut` (half-close), then an ending: `close` (graceful, the default) or
-  `rst` (always sends RST).
+  `rst` (sends RST; if the OS refuses to arm `SO_LINGER`, the closing line says so
+  instead of claiming a reset).
 
 The client takes steps as arguments; the server takes them as `--on-accept` /
 `--on-eof` hooks. See `python3 scripts/peer.py client --help`.
@@ -144,8 +145,8 @@ hello                       send it once
 ```
 
 Ctrl-C stops a running loop and returns you to the prompt; at the prompt it quits.
-Only a `sleep:` step sets the pace: without one, a loop waits a second between
-rounds, so it cannot flood by accident. What you type while a loop runs is executed
+Only a positive `sleep:` step sets the pace: without one, a loop waits a second
+between rounds, so it cannot flood by accident. What you type while a loop runs is executed
 once it ends. `/quit` (or Ctrl-D) ends the connection gracefully, and the same steps
 work as command-line arguments: `python3 scripts/peer.py client rand:16 sleep:1 loop`.
 

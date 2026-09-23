@@ -80,10 +80,11 @@ STEPS_HELP = r"""steps (client arguments, server --on-accept/--on-eof, or /STEP)
   hold       wait until the other side has sent FIN
   close      graceful end: FIN, wait for the other side's FIN, then close
              (what happens anyway after the last step)
-  rst        reset: SO_LINGER 0, then close - always sends RST
-  loop       repeat all steps; must be last and needs a sleep: or read step
-             (a read-paced loop runs as fast as the answers come back).
-             Stops once the other side has closed."""
+  rst        reset: SO_LINGER 0, then close - an RST, unless the OS refuses
+             to arm it, which the closing line then says
+  loop       repeat all steps; must be last, and needs a read step or a
+             positive sleep: to pace it (a read-paced loop runs as fast as
+             the answers come back). Stops once the other side has closed."""
 
 REPL_HELP = r"""interactive client: a typed line is sent as-is plus the --eol ending;
 //text sends /text; /STEP runs one step other than TEXT (e.g. /x:00 01 6f ff,
@@ -257,10 +258,15 @@ def parse_steps(tokens):
     for i, (kind, _) in enumerate(steps):
         if (kind in ENDINGS or kind == "loop") and i != len(steps) - 1:
             raise StepError("%r must be the last step" % kind)
-    if steps and steps[-1][0] == "loop":
-        if not any(kind in ("sleep", "read") for kind, _ in steps):
-            raise StepError("loop needs a sleep:S or read step to pace it")
+    if steps and steps[-1][0] == "loop" and not paces(steps):
+        raise StepError("loop needs a read step or a positive sleep:S to pace it")
     return steps
+
+
+def paces(steps):
+    """Whether `steps` pace a loop on their own. `sleep:0` does not: it would
+    spin as fast as the CPU and the socket allow."""
+    return any(kind == "read" or (kind == "sleep" and arg > 0) for kind, arg in steps)
 
 
 def split_tokens(text):
@@ -443,6 +449,8 @@ class Conn:
         # Stop the reader before closing (see _read_loop).
         self.stop.set()
         self.reader.join()
+        detail = {"close": "closed", "rst": "reset (RST sent)",
+                  "interrupted": "closed (interrupted)"}[how]
         if how == "rst":
             # l_onoff=1, l_linger=0: close() discards unsent data and sends RST.
             # Windows' struct linger is two u_shorts, everywhere else two ints.
@@ -450,9 +458,9 @@ class Conn:
             try:
                 self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, linger)
             except OSError as error:
+                # Say so rather than claiming a reset that will not happen.
                 self.log.event(self.tag, "!", "cannot arm the RST: " + describe(error))
-        detail = {"close": "closed", "rst": "reset (RST sent)",
-                  "interrupted": "closed (interrupted)"}[how]
+                detail = "closed (the RST could not be armed)"
         self.log.event(
             self.tag, "x", "%s: sent %d B, received %d B" % (detail, self.sent, self.received)
         )
@@ -520,7 +528,9 @@ def handle(sock, addr, log, opts):
 def run_server(opts, log):
     host, port = parse_addr(opts.listen)
     family, _, _, _, sockaddr = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)[0]
-    listener = socket.create_server(sockaddr[:2], family=family)
+    # The whole sockaddr, not just host and port: an IPv6 one also carries the
+    # scope id, without which a link-local address (fe80::1%eth0) cannot bind.
+    listener = socket.create_server(sockaddr, family=family)
     # A timeout keeps accept() interruptible by Ctrl-C (on Windows too).
     listener.settimeout(POLL)
     mode = {
@@ -612,9 +622,9 @@ def repl_loop(conn, log, command, interactive, last):
         steps, shown = last
     else:
         raise StepError("nothing sent yet: give the steps to repeat, e.g. /loop ping")
-    # Only sleep: paces a loop. A `read` returns as soon as the other side
-    # answers, which on loopback is immediately - that is a flood, not a pace.
-    pace = None if any(kind == "sleep" for kind, _ in steps) else 1.0
+    # Only a positive sleep: paces a loop. A `read` returns as soon as the other
+    # side answers, which on loopback is immediately - a flood, not a pace.
+    pace = None if any(kind == "sleep" and arg > 0 for kind, arg in steps) else 1.0
     log.event(conn.tag, "*", "looping %s%s%s (Ctrl-C stops the loop)"
               % (shown, "" if pace is None else " every %gs" % pace,
                  "" if count is None else ", %d times" % count))
@@ -975,8 +985,12 @@ def show_recipes(name):
         return 2
     proxy, server, client = recipe_commands(recipe)
     if "stdin" in recipe:
-        client_line = "printf %s | %s" % (shlex.quote(recipe["stdin"].replace("\n", "\\n")),
-                                          shlex.join(client))
+        # `%b` expands the \n escapes but leaves any % in the text alone, which
+        # it would not if the text were printf's format string.
+        client_line = "printf '%%b' %s | %s" % (
+            shlex.quote(recipe["stdin"].replace("\\", "\\\\").replace("\n", "\\n")),
+            shlex.join(client),
+        )
     else:
         client_line = shlex.join(client)
     emit("%s: %s\n" % (recipe["name"], recipe["about"]))
