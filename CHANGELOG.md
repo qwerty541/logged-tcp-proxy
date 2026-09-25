@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- Added `scripts/peer.py`, a scriptable TCP client and server (standard-library Python) for manually testing the proxy from a clone of the repository. They log their traffic in the proxy's own format, and `python3 scripts/peer.py recipes` lists ready-made three-terminal scenarios. The interactive client repeats traffic with `/loop [COUNT] [STEP ...]` (Ctrl-C stops the loop, not the client) and sends random payloads with the `rand:16` step. This is repository tooling only, not part of the published crate.
+
+### Documentation
+
+- CONTRIBUTING's `cargo run` examples now use the README's ports (listening on 20502, forwarding to 20582) instead of 9000/9100 and 8000/8080. The decimal-formatting example no longer passes `--level info`, which hid the payload it was meant to show.
+
 ## v0.3.0 (31.08.2026)
 
 ### Added
