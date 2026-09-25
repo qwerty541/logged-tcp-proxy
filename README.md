@@ -135,6 +135,10 @@ with the connection's id (`[#1]`) and marked `<` (bytes read from the client) or
 exits with status `0`. See the [Example](#example) below for an annotated run and how
 to read the output.
 
+> [!TIP]
+> Working from a clone of the repository? `scripts/peer.py` provides a scriptable client
+> and server for this setup; see [Manual testing](https://github.com/qwerty541/logged-tcp-proxy/blob/master/CONTRIBUTING.md#manual-testing).
+
 > [!NOTE] 
 > `--remote-addr` accepts an `IP:port` or a `hostname:port` (a hostname is resolved
 > via DNS each time a connection is opened) and must point at an address where
