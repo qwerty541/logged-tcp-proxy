@@ -90,7 +90,15 @@ All source lives in `src/`:
   `//` line separates them — see `threads` and `connection_ids`, the two fields
   whose letter choice needed explaining — so the switch from help text to
   maintainer note is obvious at a glance instead of reading like a dropped slash.
-- [`src/conn.rs`](src/conn.rs) — the networking core:
+- [`src/conn/`](src/conn) — the networking core, a directory module.
+  [`conn/mod.rs`](src/conn/mod.rs) is its root: it declares the two submodules and
+  holds the whole connection lifecycle in reading order — bind/serve, accept loop,
+  dial, per-connection handler, byte pump. Two per-connection concerns live in
+  submodules: [`conn/logging.rs`](src/conn/logging.rs) (`pub(crate) mod logging`) and
+  [`conn/idle.rs`](src/conn/idle.rs) (private `mod idle`). Two names are unavailable
+  for a submodule of `conn`: `log` (it shadows the `log` crate inside `conn`, so
+  every `log::info!` in `mod.rs` fails to resolve) and `conn` itself
+  (`clippy::module_inception`, a hard error under `-D warnings`).
   - `initialize_tcp_listener(arguments)` (`pub`, returns `io::Result<()>`) — binds
     the `TcpListener` (returning `Err` on a bind failure instead of panicking),
     logs that it is ready, then serves until interrupted: a `tokio::select!` runs
@@ -102,7 +110,7 @@ All source lives in `src/`:
     only writer, and each handler receives the value by copy, so no atomics are
     needed; ids are minted only for successful accepts), logs the peer address
     tagged `[#N]`, and spawns `incoming_connection_handle` with the connection's
-    `ConnLog`. Concurrency is bounded by a `tokio::sync::Semaphore`
+    `ConnLog` (from `conn::logging`). Concurrency is bounded by a `tokio::sync::Semaphore`
     sized to `--max-connections`: a permit is acquired *before* `accept()` (so at
     capacity the loop stops pulling from the backlog — backpressure) and held by the
     connection task until it closes. An `accept()` error is logged and retried after
@@ -112,14 +120,9 @@ All source lives in `src/`:
     pre-bound (ephemeral-port) listener.
   - `incoming_connection_handle(arguments, source_stream, conn_log, client_addr)`
     (private) — sets up the per-connection bidirectional relay (see below), tagging
-    all of the connection's log output via the `ConnLog` it is handed.
-  - `ConnLog` (private) — everything one connection logs. It owns that connection's
-    `[#N] ` tag (an empty string with `--no-connection-ids`, which renders
-    byte-for-byte like no prefix at all) and exposes `trace`/`debug`/`info`/`warn`/
-    `error` for the lifecycle lines plus `prefix()` for the two `ConsoleLogger`s. Routing every per-connection line through it is what makes the tag structural rather than a
-    convention each new call site must remember. The tag's delimiters are the
-    `CONN_TAG_OPEN` / `CONN_TAG_CLOSE` consts, which the tests' `strip_conn_tag`
-    parser also uses, so the grammar is defined in exactly one place.
+    all of the connection's log output via the `ConnLog` (from `conn::logging`) it
+    is handed, and — when `--timeout` is set — creating the `conn::idle` clock and
+    racing the relays against its watchdog.
   - `connect_to_target(target)` (private) — opens the destination `TcpStream` for
     one client: a `TargetAddr::Socket` is dialed directly (no DNS), a
     `TargetAddr::Named` is resolved via DNS here (once per connection, tokio trying
@@ -127,12 +130,36 @@ All source lives in `src/`:
     `io::Error` and handled by the caller exactly like any other connect failure.
   - `relay(reader, writer, activity)` (private, generic) — copies bytes in one
     direction until end-of-stream or a read/write error, recording each chunk on
-    the shared `activity` clock (when one is given), then shuts down `writer` to
-    forward the close to its peer.
-  - `ActivityClock` / `wait_until_idle` (private) — the whole-connection idle
-    timeout: a lock-free clock both directions bump on activity, plus a watchdog
-    that tears the connection down once both directions have been silent for
-    `--timeout`.
+    the shared `activity` clock (an `Option<&ActivityClock>` from `conn::idle`, when
+    one is given), then shuts down `writer` to forward the close to its peer. It
+    stays in the module root, not in `conn/idle.rs`: its subject is the byte pump
+    and the clock is one optional argument, so keeping it beside
+    `incoming_connection_handle` keeps the whole data path in one file. The price is
+    that `ActivityClock::record` must be `pub(super)`.
+- [`src/conn/logging.rs`](src/conn/logging.rs) — the per-connection `[#N] ` console
+  tag. `ConnLog` (`pub(super)`) is everything one connection logs: it owns that
+  connection's tag (an empty string with `--no-connection-ids`, which renders
+  byte-for-byte like no prefix at all) and exposes `trace`/`debug`/`info`/`warn`/
+  `error` for the lifecycle lines plus `prefix()` for the two `ConsoleLogger`s.
+  Routing every per-connection line through it is what makes the tag structural
+  rather than a convention each new call site must remember — and the private
+  `prefix` field makes `ConnLog::new` (and with it the `--no-connection-ids` branch)
+  the only way to obtain one, while the private `log` method is the single sink the
+  five level methods route through. The tag's delimiters are the `CONN_TAG_OPEN` /
+  `CONN_TAG_CLOSE` consts, which the tests' `strip_conn_tag` parser also uses, so the
+  grammar is defined in exactly one place; they are why the module is declared
+  `pub(crate) mod logging` rather than private with a `pub(crate) use` re-export — in
+  a binary crate nothing is exported, so a `pub(crate) use` whose only consumer is
+  `#[cfg(test)]` code is an `unused import` **error** under
+  `cargo clippy -- -D warnings` on the bin target, even though `cargo test` passes.
+- [`src/conn/idle.rs`](src/conn/idle.rs) — the whole-connection idle timeout
+  mechanism (private `mod idle`, nothing here is needed crate-wide): `ActivityClock`,
+  a lock-free clock both relay directions bump on activity, plus `wait_until_idle`, a
+  watchdog that resolves once both directions have been silent for `--timeout`. The
+  clock is created and raced in `incoming_connection_handle`, one module up; the
+  `Relaxed`-ordering rationale on the struct depends on that composition
+  (`join!`/`select!`, never `tokio::spawn`), so both files carry a pointer at the
+  other — keep them in sync.
 - [`src/tests.rs`](src/tests.rs) + [`src/tests/`](src/tests) — in-crate
   integration tests, compiled only under `#[cfg(test)]`. `tests.rs` is just the
   module root (a doc header plus the `mod` declarations); the tests themselves live
@@ -521,4 +548,10 @@ Dependabot (`.github/dependabot.yml`).
   (`use_field_init_shorthand = true`). Run `cargo fmt` before committing.
 - Non-Rust files are formatted with Prettier (`.prettierrc`).
 - Keep the binary-only shape: prefer `pub(crate)` for internals that tests need,
-  rather than introducing a public `lib` target.
+  rather than introducing a public `lib` target. Inside a directory module, prefer
+  `pub(super)` for internals only the parent needs (see `src/conn/`), so the
+  widening stops at that subtree instead of reaching the whole crate.
+- The coverage job's `--ignore-filename-regex 'src/tests'` is an unanchored
+  substring match on the path. It covers `src/tests/*` only — a per-module test file
+  such as `src/conn/tests.rs` would **not** match and would silently be counted as
+  source. Keep tests in `src/tests/`.
