@@ -182,6 +182,9 @@ Tips:
 - Formatting: `cargo fmt --all`
 - Linting: `cargo clippy --all-targets --all-features -- -D warnings` (this is the
   command CI runs; `--all-targets` is what lints the in-crate `src/tests/` tree)
+- Docs: `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features` (the command
+  CI's `docs` job runs; it checks intra-doc links — nothing is published, the crate
+  is binary-only)
 
 ### Testing
 
@@ -252,6 +255,7 @@ This is a **binary-only** crate — there is intentionally no `lib` target.
 - Before submitting, ensure locally:
   - `cargo fmt --all`
   - `cargo clippy --all-targets --all-features -- -D warnings`
+  - `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features`
   - `cargo test`
   - `python3 scripts/integration_test.py`, if you changed `scripts/` or the proxy's console output
 
