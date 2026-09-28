@@ -318,6 +318,7 @@ cargo build --all-targets                 # build bin + tests
 cargo test                                # run the in-crate integration tests
 cargo clippy --all-targets --all-features -- -D warnings   # --all-targets also lints src/tests
 cargo fmt --check                         # rustfmt.toml: imports_granularity="Item", use_field_init_shorthand=true
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features   # intra-doc links
 cargo msrv find                           # verify MSRV (requires cargo-msrv)
 ```
 
@@ -343,7 +344,7 @@ need to be requested each time:
   [`CHANGELOG.md`](CHANGELOG.md) (Keep a Changelog format) for anything worth
   mentioning to users.
 - **Checks** — run the full set above (`build --all-targets`, `test`, `clippy`,
-  `fmt --check`) and keep it green. When the change touches `scripts/` or the
+  `fmt --check`, `doc`) and keep it green. When the change touches `scripts/` or the
   proxy's console output, also run `python3 scripts/integration_test.py`: it is
   the only check that runs the Python peers.
 
@@ -522,6 +523,14 @@ Invariants to keep when editing it:
   `cfg(test)`, so nothing in [`src/tests/`](src/tests) — the majority of the crate's
   lines — would be seen by the only job that denies warnings.
 - **fmt** — `cargo fmt --check`.
+- **docs** — `cargo doc --no-deps --all-features` with `RUSTDOCFLAGS: -D warnings` on
+  ubuntu/stable. The crate is binary-only, so this publishes nothing; it exists to
+  fail the build on broken intra-doc links, which no other job can catch (an
+  unresolved link is a rustdoc warning, not a compile error). For a binary target
+  cargo documents private items too, so every doc comment is checked — but rustdoc
+  documents the crate *without* `cfg(test)`, so a doc link into `crate::tests::*` can
+  never resolve: refer to test items in plain backticks, as `CONN_TAG_OPEN` (in
+  [`conn/logging.rs`](src/conn/logging.rs)) does.
 - **build_and_test** — `cargo build --all-targets` then `cargo test` on
   ubuntu/macos/windows × stable/beta/nightly.
 - **integration** — builds the binary and runs the black-box
