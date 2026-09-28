@@ -14,7 +14,8 @@ use std::fmt;
 // The reference to `log_capture` above is plain code text, not an intra-doc link:
 // `mod tests` is `#[cfg(test)]`-gated (main.rs), so rustdoc — which documents the
 // crate without `cfg(test)` — can never resolve a path into it, and a link form
-// would be a permanent `broken_intra_doc_links` warning.
+// would be a permanent `broken_intra_doc_links` warning. The `docs` CI job builds
+// the docs with `-D warnings`, so such a link fails the build.
 pub(crate) const CONN_TAG_OPEN: &str = "[#";
 /// Closing delimiter of a connection's `[#N] ` console tag. The trailing space is
 /// part of it: [`ConsoleLogger`](logged_stream::ConsoleLogger) renders the prefix
