@@ -209,7 +209,7 @@ This is a **binary-only** crate — there is intentionally no `lib` target.
 
 - `src/` — application source code
   - `args.rs` — CLI arguments, value enums, and payload formatter selection
-  - `conn.rs` — TCP proxying core: accept loop, connection cap, bidirectional relay, logging, and idle timeout
+  - `conn/` — TCP proxying core: `mod.rs` holds the accept loop, connection cap, and bidirectional relay; `logging.rs` the per-connection `[#N]` console tag; `idle.rs` the idle-timeout clock and watchdog
   - `main.rs` — binary entry point, async runtime construction, and logger initialization
   - `tests.rs` + `tests/` — in-crate integration tests (compiled only under `#[cfg(test)]`), grouped into submodules by behavior; `tests/helpers.rs` holds the shared test helpers
 - `scripts/integration_test.py` — black-box test that drives the compiled binary
