@@ -78,6 +78,36 @@ jobs:
       - name: Run rustfmt
         run: cargo fmt --check
 
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    # Nothing here is ever published — the crate is binary-only, so there is no
+    # docs.rs page (see CLAUDE.md). The job exists because the code leans heavily on
+    # rustdoc commentary, and its intra-doc links are checked by no other job: a
+    # link that resolves to nothing is not a compile error, and neither clippy nor
+    # the test suite runs rustdoc. One such link (on `CONN_TAG_OPEN`, now in
+    # `src/conn/logging.rs`) had gone unnoticed precisely because of that gap.
+    # `-D warnings` promotes the warning class (`broken_intra_doc_links` and
+    # friends) to a build failure. For a binary target, cargo documents private
+    # items too, so every doc comment is checked — except in the `#[cfg(test)]`
+    # tree, which rustdoc never compiles.
+    env:
+      RUSTDOCFLAGS: -D warnings
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install rust (stable)
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: stable
+
+      - name: Run rustdoc
+        run: cargo doc --no-deps --all-features
+
   build_and_test:
     name: Build and test
     runs-on: ${{ matrix.os }}-latest
