@@ -160,10 +160,10 @@ All source lives in `src/`:
   `Relaxed`-ordering rationale on the struct depends on that composition
   (`join!`/`select!`, never `tokio::spawn`), so both files carry a pointer at the
   other — keep them in sync.
-- [`src/tests.rs`](src/tests.rs) + [`src/tests/`](src/tests) — in-crate
-  integration tests, compiled only under `#[cfg(test)]`. `tests.rs` is just the
-  module root (a doc header plus the `mod` declarations); the tests themselves live
-  in submodules grouped by the behavior they cover — `relay`, `teardown`, `errors`,
+- [`src/tests/`](src/tests) — in-crate integration tests, compiled only under
+  `#[cfg(test)]`; a directory module like `conn`. [`tests/mod.rs`](src/tests/mod.rs)
+  is just its root (a doc header plus the `mod` declarations); the tests themselves
+  live in submodules grouped by the behavior they cover — `relay`, `teardown`, `errors`,
   `real_protocols`, `idle_timeout`, `accept_loop`, `hostname`, `cli_args`,
   `conn_ids` and `formatting` —
   alongside two scaffolding-only modules, `helpers` (the shared constants, echo
@@ -560,6 +560,13 @@ Dependabot (`.github/dependabot.yml`).
   rather than introducing a public `lib` target. Inside a directory module, prefer
   `pub(super)` for internals only the parent needs (see `src/conn/`), so the
   widening stops at that subtree instead of reaching the whole crate.
+- Module layout: a module with submodules is a directory rooted at `mod.rs`
+  (`src/conn/mod.rs`, `src/tests/mod.rs`) — never a `foo.rs` beside a `foo/` — and
+  leaf modules stay plain files (`args.rs`, `conn/idle.rs`). `mod` declarations
+  therefore live only in root files: `main.rs` for the crate's top-level modules, a
+  directory's `mod.rs` for its children. The opt-in
+  `cargo clippy --all-targets -- -W clippy::self_named_module_files` (not enabled in
+  CI) flags any `foo.rs` + `foo/` pair.
 - The coverage job's `--ignore-filename-regex 'src/tests'` is an unanchored
   substring match on the path. It covers `src/tests/*` only — a per-module test file
   such as `src/conn/tests.rs` would **not** match and would silently be counted as
