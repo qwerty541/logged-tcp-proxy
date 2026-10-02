@@ -1,3 +1,19 @@
+//! The networking core: bind and serve, accept connections, dial the destination,
+//! and pump bytes between the two in both directions.
+//!
+//! Two per-connection concerns live in submodules of this one, so the file reads as
+//! an uninterrupted connection lifecycle:
+//!
+//! - [`logging`] — the `[#N] ` console tag and the `ConnLog` facade every
+//!   per-connection line is logged through.
+//! - [`idle`] — the activity clock and watchdog behind `--timeout`.
+
+mod idle;
+pub(crate) mod logging;
+
+use self::idle::ActivityClock;
+use self::idle::wait_until_idle;
+use self::logging::ConnLog;
 use crate::args::Arguments;
 use crate::args::TargetAddr;
 use crate::args::get_formatter_by_kind;
@@ -7,11 +23,8 @@ use logged_stream::DefaultFilter;
 use logged_stream::LoggedStream;
 use logged_stream::RecordKind;
 use logged_stream::RecordKindFilter;
-use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
@@ -20,9 +33,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::io::{self};
 use tokio::net as tokio_net;
 use tokio::sync::Semaphore;
-use tokio::time::Instant;
 use tokio::time::sleep;
-use tokio::time::sleep_until;
 
 pub async fn initialize_tcp_listener(arguments: Arguments) -> io::Result<()> {
     let listener = match tokio_net::TcpListener::bind(arguments.bind_listener_addr).await {
@@ -128,94 +139,6 @@ async fn connect_to_target(target: &TargetAddr) -> io::Result<tokio_net::TcpStre
     }
 }
 
-/// Opening delimiter of a connection's `[#N] ` console tag.
-///
-/// The tag's grammar lives here rather than being spelled out at each site that
-/// produces or parses it, so a change to the shape cannot leave a parser quietly
-/// matching nothing (see `strip_conn_tag` in `crate::tests::log_capture`).
-//
-// The reference to `log_capture` above is plain code text, not an intra-doc link:
-// `mod tests` is `#[cfg(test)]`-gated (main.rs), so rustdoc — which documents the
-// crate without `cfg(test)` — can never resolve a path into it, and a link form
-// would be a permanent `broken_intra_doc_links` warning. The `docs` CI job builds
-// the docs with `-D warnings`, so that class of rot now fails the build.
-pub(crate) const CONN_TAG_OPEN: &str = "[#";
-/// Closing delimiter of a connection's `[#N] ` console tag. The trailing space is
-/// part of it: [`ConsoleLogger`] renders the prefix verbatim, immediately before
-/// the record-kind character, with no separator of its own.
-pub(crate) const CONN_TAG_CLOSE: &str = "] ";
-
-/// Everything one proxied connection logs, carrying that connection's id tag.
-///
-/// The tag is `"[#N] "` (see [`CONN_TAG_OPEN`] / [`CONN_TAG_CLOSE`]), or an empty
-/// string when `--no-connection-ids` disabled the tags — an empty prefix renders
-/// byte-for-byte like no prefix at all, so the disabled path reproduces the
-/// untagged output exactly through the same code.
-///
-/// Every per-connection line goes through this type: the lifecycle lines via
-/// [`log`](Self::log) / [`trace`](Self::trace) / [`debug`](Self::debug) /
-/// [`info`](Self::info) / [`warn`](Self::warn) / [`error`](Self::error), and both
-/// `LoggedStream`s' console records via [`prefix`](Self::prefix). That is what keeps
-/// the tag from being forgotten — a new per-connection line cannot be logged without
-/// one, so the "every line of a connection is attributable" guarantee is structural
-/// rather than a convention each future call site has to remember.
-struct ConnLog {
-    prefix: String,
-}
-
-impl ConnLog {
-    /// Build the logger for connection `conn_id`, honouring `--no-connection-ids`.
-    fn new(arguments: &Arguments, conn_id: u64) -> Self {
-        Self {
-            prefix: if arguments.connection_ids {
-                format!("{CONN_TAG_OPEN}{conn_id}{CONN_TAG_CLOSE}")
-            } else {
-                String::new()
-            },
-        }
-    }
-
-    /// The connection's tag, for [`ConsoleLogger::with_prefix`].
-    fn prefix(&self) -> &str {
-        &self.prefix
-    }
-
-    /// Log a line with the connection's tag at the given level. The `message`
-    /// argument is a `format_args!`-style `fmt::Arguments` value, so the caller
-    /// can use `{}`-style formatting without allocating a `String`.
-    fn log(&self, level: log::Level, message: fmt::Arguments<'_>) {
-        log::log!(level, "{}{message}", self.prefix);
-    }
-
-    /// Log one of the connection's debug lines, tagged, at the `trace` level.
-    #[allow(dead_code)]
-    fn trace(&self, message: fmt::Arguments<'_>) {
-        self.log(log::Level::Trace, message);
-    }
-
-    /// Log one of the connection's debug lines, tagged, at the `debug` level.
-    #[allow(dead_code)]
-    fn debug(&self, message: fmt::Arguments<'_>) {
-        self.log(log::Level::Debug, message);
-    }
-
-    /// Log one of the connection's lifecycle lines, tagged, at the `info` level.
-    fn info(&self, message: fmt::Arguments<'_>) {
-        self.log(log::Level::Info, message);
-    }
-
-    /// Log one of the connection's warning lines, tagged, at the `warn` level.
-    #[allow(dead_code)]
-    fn warn(&self, message: fmt::Arguments<'_>) {
-        self.log(log::Level::Warn, message);
-    }
-
-    /// Log one of the connection's failure lines, tagged, at the `error` level.
-    fn error(&self, message: fmt::Arguments<'_>) {
-        self.log(log::Level::Error, message);
-    }
-}
-
 async fn incoming_connection_handle(
     arguments: Arguments,
     source_stream: tokio_net::TcpStream,
@@ -286,6 +209,10 @@ async fn incoming_connection_handle(
         }
         Some(seconds) => {
             let idle = Duration::from_secs(seconds);
+            // Both relays and the watchdog below share this clock as sub-futures of
+            // *this* task — they are composed with `join!`/`select!`, never spawned.
+            // That is the premise of the `Relaxed` ordering documented on
+            // [`ActivityClock`](idle::ActivityClock); keep them composed here.
             let clock = ActivityClock::new();
             let relays = async {
                 tokio::join!(
@@ -319,58 +246,6 @@ async fn incoming_connection_handle(
                     ));
                 } => {}
             }
-        }
-    }
-}
-
-/// Shared "last activity" clock for a connection's idle timeout. It records the
-/// most recent moment either direction relayed data, as milliseconds since the
-/// connection started; interior mutability lets both relay directions update it
-/// through a shared reference.
-struct ActivityClock {
-    started: Instant,
-    // `Relaxed` is deliberate. The relays and the watchdog that touch this are
-    // cooperatively-scheduled sub-futures of a *single* task (composed with
-    // `join!`/`select!`, not separate spawns — note they borrow `&self`), so they
-    // never access it from two threads at once. It is also a self-contained
-    // timestamp that guards no other memory, so there is nothing for Acquire/Release
-    // to publish; single-location coherence is the whole requirement, and the
-    // watchdog re-reads after sleeping whole seconds, far longer than any store can
-    // take to become visible.
-    last_active_millis: AtomicU64,
-}
-
-impl ActivityClock {
-    fn new() -> Self {
-        Self {
-            started: Instant::now(),
-            last_active_millis: AtomicU64::new(0),
-        }
-    }
-
-    /// Record that data just moved in some direction (resets the idle timer).
-    fn record(&self) {
-        self.last_active_millis
-            .store(self.started.elapsed().as_millis() as u64, Ordering::Relaxed);
-    }
-
-    /// The instant at which the connection is considered idle for `idle`.
-    fn idle_deadline(&self, idle: Duration) -> Instant {
-        let last_active = Duration::from_millis(self.last_active_millis.load(Ordering::Relaxed));
-        // `idle` is the `--timeout` value, which `args::Arguments` range-validates to
-        // at most ~100 years, so this `Instant + Duration` can never overflow the
-        // monotonic clock (which would otherwise panic).
-        self.started + last_active + idle
-    }
-}
-
-/// Resolve once the connection has seen no activity in either direction for
-/// `idle`, re-arming whenever fresh activity pushes the deadline out.
-async fn wait_until_idle(clock: &ActivityClock, idle: Duration) {
-    loop {
-        sleep_until(clock.idle_deadline(idle)).await;
-        if Instant::now() >= clock.idle_deadline(idle) {
-            return;
         }
     }
 }
