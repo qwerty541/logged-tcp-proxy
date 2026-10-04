@@ -785,7 +785,8 @@ RECIPES = [
             "The same bytes carry the same arrow in all three terminals: < is",
             "client -> server, > is server -> client. The server replies 're: ' + data,",
             "so the two directions differ. Try -f decimal (or upperhex, octal, binary)",
-            "in all three terminals. Ctrl-D in T3 ends the conversation gracefully.",
+            "in all three terminals. Ctrl-D in T3 ends the conversation gracefully,",
+            "and T1 ends it with the close summary: the bytes each way and the time.",
         ],
     },
     {
@@ -797,16 +798,22 @@ RECIPES = [
         "look": [
             "T1: [#1] < 68:65:6c:6c:6f:0a (hello) then [#1] > 72:65:3a:20:... (re: hello).",
             "Then two '- Writer shutdown request.' lines (one per direction, as each",
-            "FIN is forwarded) and two 'x Deallocated.' lines.",
+            "FIN is forwarded), two 'x Deallocated.' lines, and last the INFO close",
+            "summary '[#1] Closed connection from 127.0.0.1:<port> (client finished",
+            "sending first): client -> server 6 B, server -> client 10 B in <t>s':",
+            "the same counts as T3's and T2's 'x closed' lines.",
         ],
         "ci": True,
         "expect": {
             "client": ["< 68:65:6c:6c:6f:0a", "> 72:65:3a:20:68:65:6c:6c:6f:0a",
-                       "- FIN sent", "= EOF", "x closed"],
+                       "- FIN sent", "= EOF", "x closed: sent 6 B, received 10 B"],
             "proxy": ["[#1] < 68:65:6c:6c:6f:0a", "[#1] > 72:65:3a:20:68:65:6c:6c:6f:0a",
-                      "[#1] - Writer shutdown request.", "[#1] x Deallocated."],
+                      "[#1] - Writer shutdown request.", "[#1] x Deallocated.",
+                      "[#1] Closed connection from 127.0.0.1:",
+                      "(client finished sending first): client -> server 6 B, "
+                      "server -> client 10 B in "],
             "server": ["< 68:65:6c:6c:6f:0a", "> 72:65:3a:20:68:65:6c:6c:6f:0a",
-                       "= EOF", "- FIN sent", "x closed"],
+                       "= EOF", "- FIN sent", "x closed: sent 10 B, received 6 B"],
         },
     },
     {
@@ -824,7 +831,10 @@ RECIPES = [
         "ci": True,
         "expect": {
             "client": ["< 68:65:6c:6c:6f:0a", "- FIN sent", "= EOF", "x closed"],
-            "proxy": ["[#1] < 68:65:6c:6c:6f:0a", "[#1] x Deallocated."],
+            "proxy": ["[#1] < 68:65:6c:6c:6f:0a", "[#1] x Deallocated.",
+                      "[#1] Closed connection from 127.0.0.1:",
+                      "(client finished sending first): client -> server 10 B, "
+                      "server -> client 10 B in "],
             "server": ["< 68:65:6c:6c:6f:0a", "= EOF", "x closed"],
         },
     },
@@ -839,7 +849,8 @@ RECIPES = [
             "Typed interactively, this is: send 'ping', then '/loop 2' to repeat it",
             "twice, a second apart, then '/loop 3 rand:4 sleep:0.2' for three 4-byte",
             "random payloads. T1 shows one < line per send, the random ones differing",
-            "every time. Without a count, /loop runs until Ctrl-C.",
+            "every time, and its close summary counts all 27 B T3 says it sent.",
+            "Without a count, /loop runs until Ctrl-C.",
         ],
         "ci": True,
         "expect": {
@@ -847,7 +858,10 @@ RECIPES = [
                        "< 70:69:6e:67:0a", "loop finished (2 round(s))",
                        "* looping rand:4 sleep:0.2, 3 times",
                        "loop finished (3 round(s))", "x closed: sent 27 B, received 0 B"],
-            "proxy": ["[#1] < 70:69:6e:67:0a", "[#1] x Deallocated."],
+            "proxy": ["[#1] < 70:69:6e:67:0a", "[#1] x Deallocated.",
+                      "[#1] Closed connection from 127.0.0.1:",
+                      "(client finished sending first): client -> server 27 B, "
+                      "server -> client 0 B in "],
             "server": ["< 70:69:6e:67:0a", "x closed: sent 0 B, received 27 B"],
         },
     },
@@ -864,7 +878,10 @@ RECIPES = [
         "expect": {
             "client": ["> 32:32:30:20:72:65:61:64:79:0d:0a", "< 48:45:4c:4f:20:6d:65:0d:0a"],
             "proxy": ["[#1] > 32:32:30:20:72:65:61:64:79:0d:0a",
-                      "[#1] < 48:45:4c:4f:20:6d:65:0d:0a"],
+                      "[#1] < 48:45:4c:4f:20:6d:65:0d:0a",
+                      "[#1] Closed connection from 127.0.0.1:",
+                      "(client finished sending first): client -> server 9 B, "
+                      "server -> client 24 B in "],
             "server": ["> 32:32:30:20:72:65:61:64:79:0d:0a", "< 48:45:4c:4f:20:6d:65:0d:0a"],
         },
     },
@@ -877,13 +894,18 @@ RECIPES = [
         "look": [
             "T1: < REQ, then '- Writer shutdown request.' at once (the client's FIN,",
             "forwarded), then 0.5 s later > RESPONSE: data still flows the other way.",
-            "T3 prints '- FIN sent' before it receives the response.",
+            "T3 prints '- FIN sent' before it receives the response. T1's close",
+            "summary says '(client finished sending first)' although the response came",
+            "later: finishing sending is not finishing the conversation.",
         ],
         "ci": True,
         "expect": {
             "client": ["< 52:45:51:0a", "- FIN sent", "> 52:45:53:50:4f:4e:53:45:0a", "= EOF"],
             "proxy": ["[#1] < 52:45:51:0a", "[#1] - Writer shutdown request.",
-                      "[#1] > 52:45:53:50:4f:4e:53:45:0a"],
+                      "[#1] > 52:45:53:50:4f:4e:53:45:0a",
+                      "[#1] Closed connection from 127.0.0.1:",
+                      "(client finished sending first): client -> server 4 B, "
+                      "server -> client 9 B in "],
             "server": ["< 52:45:51:0a", "= EOF", "> 52:45:53:50:4f:4e:53:45:0a",
                        "- FIN sent", "x closed"],
         },
@@ -897,16 +919,43 @@ RECIPES = [
         "look": [
             "T1: an ERROR line '! Error during async read: ...' (connection reset). T2 logs a",
             "plain '= EOF': the proxy turns the RST into a FIN towards the server.",
-            "The mirror image: server --on-accept read rst, client 'hello\\n' read.",
-            "Rerun the proxy with -l info: payload lines vanish, the ERROR line stays.",
+            "The ERROR line reads the same whichever side reset; the close summary",
+            "names it: '(client-side error: connection reset)'. The mirror image:",
+            "server --on-accept read rst, client 'hello\\n' read, gives",
+            "'(server-side error: ...)'. Rerun the proxy with -l info: payload lines",
+            "vanish, the ERROR line and the summary stay.",
         ],
         "ci": True,
         "expect": {
             "client": ["< 68:65:6c:6c:6f:0a", "> 72:65:3a:20", "x reset (RST sent)"],
-            "proxy": ["[#1] < 68:65:6c:6c:6f:0a", "[#1] ! Error during async read"],
+            # The error kind after the side is the OS's text, so only the side is
+            # pinned: `connection reset` on Linux may read differently elsewhere.
+            "proxy": ["[#1] < 68:65:6c:6c:6f:0a", "[#1] ! Error during async read",
+                      "[#1] Closed connection from 127.0.0.1:", "(client-side error: ",
+                      "): client -> server 6 B, server -> client 10 B in "],
             "server": ["< 68:65:6c:6c:6f:0a", "= EOF", "x closed"],
         },
         "absent": {"server": [" ! "]},
+    },
+    {
+        "name": "server-close",
+        "about": "The server finishes first; the proxy's close summary says so.",
+        "proxy": [],
+        "server": ["--on-accept", "bye\\n", "close"],
+        "client": ["read", "hold"],
+        "look": [
+            "T2 sends 'bye' and closes at once. T3 receives it, sees the server's",
+            "close ('= EOF') and closes too. T1 ends with '(server finished sending",
+            "first): client -> server 0 B, server -> client 4 B'.",
+        ],
+        "ci": True,
+        "expect": {
+            "client": ["> 62:79:65:0a", "= EOF", "- FIN sent", "x closed: sent 0 B, received 4 B"],
+            "proxy": ["[#1] > 62:79:65:0a", "[#1] Closed connection from 127.0.0.1:",
+                      "(server finished sending first): client -> server 0 B, "
+                      "server -> client 4 B in "],
+            "server": ["> 62:79:65:0a", "- FIN sent", "= EOF", "x closed: sent 4 B, received 0 B"],
+        },
     },
     {
         "name": "idle",
@@ -916,12 +965,15 @@ RECIPES = [
         "client": ["hello\\n", "read", "hold"],
         "look": [
             "T1: 2 s after the last payload line, '[#1] Closing idle connection from",
-            "127.0.0.1:<port> after 2s of inactivity'. Both peers log '= EOF'.",
+            "127.0.0.1:<port> after 2s of inactivity', then the close summary",
+            "'(idle timeout)' with both byte counts. Both peers log '= EOF'.",
         ],
         "ci": True,
         "expect": {
             "client": ["> 72:65:3a:20", "= EOF", "x closed"],
-            "proxy": ["[#1] Closing idle connection from 127.0.0.1:", "[#1] x Deallocated."],
+            "proxy": ["[#1] Closing idle connection from 127.0.0.1:", "[#1] x Deallocated.",
+                      "[#1] Closed connection from 127.0.0.1:",
+                      "(idle timeout): client -> server 6 B, server -> client 10 B in "],
             "server": ["= EOF", "x closed"],
         },
     },
@@ -934,7 +986,8 @@ RECIPES = [
         "look": [
             "Run the client command in a fourth terminal too. It connects and sends",
             "at once, but the proxy logs no [#2] line and relays nothing until the",
-            "first client quits (Ctrl-C in T3).",
+            "first client quits (Ctrl-C in T3): [#1]'s close summary comes first,",
+            "then the [#2] line.",
         ],
     },
     {
@@ -944,8 +997,10 @@ RECIPES = [
         "server": None,
         "client": ["hello\\n", "read"],
         "look": [
-            "T1: '[#1] Failed to connect to destination ...' at ERROR level. T3 had",
-            "already sent data, so it usually sees a reset rather than a clean EOF.",
+            "T1: '[#1] Failed to connect to destination ...' at ERROR level, then the",
+            "close summary '(connect to destination failed): client -> server 0 B,",
+            "...': the proxy never read the data T3 had already sent, so T3 usually",
+            "sees a reset rather than a clean EOF.",
         ],
     },
     {
@@ -957,7 +1012,9 @@ RECIPES = [
         "client": ["x:00:01:00:00:00:06:01:03:00:00:00:02", "read", "sleep:1", "loop"],
         "look": [
             "T1: each second, < the request (read 2 holding registers from unit 1)",
-            "and > the response (values 10 and 11). Stop with Ctrl-C in T3.",
+            "and > the response (values 10 and 11). Stop with Ctrl-C in T3: the",
+            "close summary counts 12 B per request and 13 B per response. Ctrl-C in",
+            "T1 instead ends it as '(interrupted)'.",
         ],
     },
 ]
