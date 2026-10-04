@@ -22,6 +22,7 @@ use super::helpers::spawn_proxy_with_target;
 use super::helpers::spawn_proxy_with_timeout;
 use super::log_capture::captured_lines;
 use super::log_capture::install_capturing_logger;
+use super::log_capture::wait_for_line;
 use crate::args::TargetAddr;
 use std::net::SocketAddr;
 use tokio::io::AsyncReadExt;
@@ -178,7 +179,9 @@ async fn idle_close_line_carries_the_connection_tag() {
 }
 
 /// With `--no-connection-ids` the tags disappear: the accept line is captured in
-/// its exact untagged form (an equality match, so a tagged line cannot pass).
+/// its exact untagged form (an equality match, so a tagged line cannot pass), and
+/// so is the close summary (a tagged line starts with `[#`, so it cannot match the
+/// awaited prefix).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn no_connection_ids_disables_the_tags() {
     install_capturing_logger();
@@ -195,4 +198,11 @@ async fn no_connection_ids_disables_the_tags() {
         lines.contains(&format!("Incoming connection from {client_addr}")),
         "with ids disabled the accept line must be exactly the untagged form; captured: {lines:?}"
     );
+
+    drop(client);
+    wait_for_line(&format!(
+        "Closed connection from {client_addr} (client finished sending first): \
+         client -> server 19 B, server -> client 19 B in "
+    ))
+    .await;
 }

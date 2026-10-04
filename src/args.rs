@@ -337,4 +337,14 @@ pub struct Arguments {
     // the *field* name, yielding `-c`, which reads as *enabling* the tags.
     #[arg(short = 'n', long = "no-connection-ids", action = clap::ArgAction::SetFalse)]
     pub connection_ids: bool,
+    /// Disable the summary line logged when each connection closes (how it ended,
+    /// the bytes relayed in each direction and how long it was open).
+    //
+    // `short = 'x'` is spelled out: a bare `short` would derive `-c` from the field
+    // name, which reads as *enabling* the summary (and is kept free for a future
+    // `--connection-ids`), and `-n` ("no") is taken by `--no-connection-ids`. `x` is
+    // the closing marker in this tool's output (`x Deallocated.`, and peer.py's own
+    // `x closed: ...` summary).
+    #[arg(short = 'x', long = "no-close-summary", action = clap::ArgAction::SetFalse)]
+    pub close_summary: bool,
 }

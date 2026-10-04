@@ -51,6 +51,9 @@ pub(super) fn test_arguments(
         // The default: console lines are tagged with per-connection `[#N]` ids.
         // The `conn_ids` submodule flips this locally to cover the opt-out.
         connection_ids: true,
+        // The default: every connection ends with its close summary. The
+        // `close_summary` submodule flips this locally to cover the opt-out.
+        close_summary: true,
     }
 }
 

@@ -35,6 +35,12 @@ All source lives in `src/`:
   whose worker-thread count comes from `--threads` (default 4, instead of a
   compile-time constant), and drives `conn::initialize_tcp_listener` on it via
   `block_on`. A runtime that fails to build is logged and the process exits `1`.
+  After Ctrl-C the runtime must be **dropped normally** at the end of `main` (never
+  `shutdown_background()`, never a `process::exit` on the success path): its drop
+  cancels every connection still open, and dropping each connection's task is what
+  logs its `(interrupted)` close summary — the drop also waits for that to finish.
+  Only the in-crate runtime-drop test and the black-box Ctrl-C case would notice a
+  change here.
 - [`src/args.rs`](src/args.rs) — the `clap`-derived `Arguments` struct (all
   fields `pub`) plus three CLI value enums (`LoggingLevel`,
   `PayloadFormattingKind`, `TimestampPrecision`). Each enum derives clap's
@@ -71,6 +77,12 @@ All source lives in `src/`:
   `-c` free, and pointing the right way, for an explicit `--connection-ids`
   positive counterpart should one ever be added.
 
+  The `close_summary` field follows the same pattern behind `-x` /
+  `--no-close-summary` (`ArgAction::SetFalse`, default `true`): it controls the
+  per-connection close summary line. Its letter is spelled out too — a bare `short`
+  would derive `-c` again, and `-n` is taken — and `x` was picked because it is the
+  closing marker in the tool's own output (`x Deallocated.`, peer.py's `x closed: ...`).
+
   Every option's short flag is written out (`short = 'l'`, never a bare `short`).
   A bare `short` takes its letter from the *field* name, so renaming a field would
   silently move a public flag — the long name can be pinned separately, so even
@@ -87,14 +99,16 @@ All source lives in `src/`:
   while a `//` comment is a maintainer-only note that never reaches the CLI. Keep
   implementation rationale in `//` — promoting it to `///` leaks internals such as
   `ArgAction::SetFalse` into user-facing help. Where a field carries both, a bare
-  `//` line separates them — see `threads` and `connection_ids`, the two fields
-  whose letter choice needed explaining — so the switch from help text to
-  maintainer note is obvious at a glance instead of reading like a dropped slash.
+  `//` line separates them — see `threads`, `connection_ids` and `close_summary`,
+  the three fields whose letter choice needed explaining — so the switch from help
+  text to maintainer note is obvious at a glance instead of reading like a dropped
+  slash.
 - [`src/conn/`](src/conn) — the networking core, a directory module.
-  [`conn/mod.rs`](src/conn/mod.rs) is its root: it declares the two submodules and
+  [`conn/mod.rs`](src/conn/mod.rs) is its root: it declares the three submodules and
   holds the whole connection lifecycle in reading order — bind/serve, accept loop,
-  dial, per-connection handler, byte pump. Two per-connection concerns live in
-  submodules: [`conn/logging.rs`](src/conn/logging.rs) (`pub(crate) mod logging`) and
+  dial, per-connection handler, byte pump. Three per-connection concerns live in
+  submodules: [`conn/logging.rs`](src/conn/logging.rs) (`pub(crate) mod logging`),
+  [`conn/stats.rs`](src/conn/stats.rs) (`pub(crate) mod stats`) and
   [`conn/idle.rs`](src/conn/idle.rs) (private `mod idle`). Two names are unavailable
   for a submodule of `conn`: `log` (it shadows the `log` crate inside `conn`, so
   every `log::info!` in `mod.rs` fails to resolve) and `conn` itself
@@ -108,9 +122,18 @@ All source lives in `src/`:
     for each accepted connection it mints the next per-run connection id (a plain
     local `u64` counter starting at 1 — the accept loop is a single task and the
     only writer, and each handler receives the value by copy, so no atomics are
-    needed; ids are minted only for successful accepts), logs the peer address
-    tagged `[#N]`, and spawns `incoming_connection_handle` with the connection's
-    `ConnLog` (from `conn::logging`). Concurrency is bounded by a `tokio::sync::Semaphore`
+    needed; ids are minted only for successful accepts), creates the connection's
+    `ConnStats` record (from `conn::stats`; `ConnStats::accepted` mints its `ConnLog`
+    and logs the tagged accept line), and spawns a task that lends the record to
+    `incoming_connection_handle`, then drops it — logging the close summary — and
+    then the permit. The record is created *before* `tokio::spawn`, never inside the
+    handler: the runtime can drop a task before its first poll (Ctrl-C right after an
+    accept), and an async fn's body does not run until polled, so a record the
+    handler created would leave such a connection without a summary — keep any
+    `.await` out of that stretch. It is *lent*, not moved: the handler's future, which
+    owns both `LoggedStream`s, borrows it, so it is always dropped first — including
+    when the runtime drops the task mid-`.await` — which is what makes the summary
+    the connection's last line. Concurrency is bounded by a `tokio::sync::Semaphore`
     sized to `--max-connections`: a permit is acquired *before* `accept()` (so at
     capacity the loop stops pulling from the backlog — backpressure) and held by the
     connection task until it closes. An `accept()` error is logged and retried after
@@ -118,24 +141,29 @@ All source lives in `src/`:
     a persistent failure such as file-descriptor exhaustion can't spin the loop.
     Extracted from `initialize_tcp_listener` so it can be driven by tests with a
     pre-bound (ephemeral-port) listener.
-  - `incoming_connection_handle(arguments, source_stream, conn_log, client_addr)`
-    (private) — sets up the per-connection bidirectional relay (see below), tagging
-    all of the connection's log output via the `ConnLog` (from `conn::logging`) it
-    is handed, and — when `--timeout` is set — creating the `conn::idle` clock and
-    racing the relays against its watchdog.
+  - `incoming_connection_handle(arguments, source_stream, conn_stats)` (private) —
+    sets up the per-connection bidirectional relay (see below), tagging all of the
+    connection's log output via the `ConnLog` its `&ConnStats` lends it
+    (`conn_stats.conn_log()`), handing each `relay` its direction's `RelayStats`
+    handle, recording the endings it causes itself (`Teardown::ConnectFailed`,
+    `Teardown::IdleTimeout`), and — when `--timeout` is set — creating the
+    `conn::idle` clock and racing the relays against its watchdog.
   - `connect_to_target(target)` (private) — opens the destination `TcpStream` for
     one client: a `TargetAddr::Socket` is dialed directly (no DNS), a
     `TargetAddr::Named` is resolved via DNS here (once per connection, tokio trying
     each resolved address in turn). A resolution failure is returned as an
     `io::Error` and handled by the caller exactly like any other connect failure.
-  - `relay(reader, writer, activity)` (private, generic) — copies bytes in one
-    direction until end-of-stream or a read/write error, recording each chunk on
-    the shared `activity` clock (an `Option<&ActivityClock>` from `conn::idle`, when
-    one is given), then shuts down `writer` to forward the close to its peer. It
-    stays in the module root, not in `conn/idle.rs`: its subject is the byte pump
-    and the clock is one optional argument, so keeping it beside
-    `incoming_connection_handle` keeps the whole data path in one file. The price is
-    that `ActivityClock::record` must be `pub(super)`.
+  - `relay(reader, writer, stats, activity)` (private, generic) — copies bytes in
+    one direction until end-of-stream or a read/write error, counting each chunk on
+    its direction's `stats` handle (a `RelayStats` from `conn::stats`) as soon as it
+    is read and recording it on the shared `activity` clock (an
+    `Option<&ActivityClock>` from `conn::idle`, when one is given), then reports how
+    it ended (`RelayEnd`: end-of-stream, read error or write error) and shuts down
+    `writer` to forward the close to its peer. It stays in the module root, not in
+    `conn/idle.rs` or `conn/stats.rs`: its subject is the byte pump and the clock and
+    counters are arguments, so keeping it beside `incoming_connection_handle` keeps
+    the whole data path in one file. The price is that `ActivityClock::record` and
+    the `RelayStats` methods must be `pub(super)`.
 - [`src/conn/logging.rs`](src/conn/logging.rs) — the per-connection `[#N] ` console
   tag. `ConnLog` (`pub(super)`) is everything one connection logs: it owns that
   connection's tag (an empty string with `--no-connection-ids`, which renders
@@ -152,6 +180,29 @@ All source lives in `src/`:
   a binary crate nothing is exported, so a `pub(crate) use` whose only consumer is
   `#[cfg(test)]` code is an `unused import` **error** under
   `cargo clippy -- -D warnings` on the bin target, even though `cargo test` passes.
+  Each connection's `ConnLog` is minted by, and lives in, its `ConnStats` record.
+- [`src/conn/stats.rs`](src/conn/stats.rs) — the per-connection close summary.
+  `ConnStats` (`pub(super)`) is one accepted connection's record:
+  `ConnStats::accepted` mints its `ConnLog` and logs the accept line, and its `Drop`
+  logs the close summary (unless `--no-close-summary`), so every accept line is
+  matched by exactly one summary by construction. Never create one for anything but
+  an accepted connection. In between it collects what the summary reports: per
+  direction a byte counter and a "finished" flag (`AtomicU64`/`AtomicBool`,
+  `Relaxed` on the same single-task premise as `ActivityClock` — the two files point
+  at each other, keep them in sync), the first relay ending (`first_end`, a
+  `OnceLock<Ending>`) and an ending the handler caused itself (`teardown`, a
+  `OnceLock<Teardown>`). Each relay holds a `Copy` `RelayStats` handle (`received`,
+  `finished`). The vocabulary is plain `pub(crate)` data — `Peer`, `Direction`,
+  `RelayEnd`, `Ending`, `CloseReason`, `Summary` — which is why the module is
+  `pub(crate) mod stats` (on the `logging` precedent): `tests::close_summary`
+  renders summaries and checks the attribution rule without sockets.
+  `Direction::ending` is that rule — end-of-stream and read errors are charged to the
+  direction's sender, write errors to its receiver, so both operations on one socket
+  name the same side. `ConnStats::close_reason` picks the reason: a recorded
+  `Teardown` wins; else, if both directions finished, the first ending; else the
+  task was dropped mid-relay, `Interrupted`. An overriding reason keeps an earlier
+  ending as its `after` (`idle timeout after client finished sending`), so a side
+  that failed first is never hidden.
 - [`src/conn/idle.rs`](src/conn/idle.rs) — the whole-connection idle timeout
   mechanism (private `mod idle`, nothing here is needed crate-wide): `ActivityClock`,
   a lock-free clock both relay directions bump on activity, plus `wait_until_idle`, a
@@ -165,7 +216,7 @@ All source lives in `src/`:
   is just its root (a doc header plus the `mod` declarations); the tests themselves
   live in submodules grouped by the behavior they cover — `relay`, `teardown`, `errors`,
   `real_protocols`, `idle_timeout`, `accept_loop`, `hostname`, `cli_args`,
-  `conn_ids` and `formatting` —
+  `conn_ids`, `close_summary` and `formatting` —
   alongside two scaffolding-only modules, `helpers` (the shared constants, echo
   servers, proxy spawners and client assertions) and `log_capture` (the capturing
   `log` sink used to assert on what the proxy logged). Because `mod tests;` in
@@ -196,7 +247,7 @@ All source lives in `src/`:
    resolved peer address, then wraps the stream in another `LoggedStream` and splits it.
    Both `LoggedStream`s' console loggers carry the connection's `[#N] ` prefix, and
    the per-connection lifecycle lines (accept, connect failure, `Connected to
-   destination`, idle close) start with the same tag.
+   destination`, idle close, close summary) start with the same tag.
 3. Relays both directions concurrently with `tokio::join!` over two `relay`
    futures (one connection task, not two spawned per-direction tasks), running
    each direction to completion:
@@ -215,6 +266,25 @@ All source lives in `src/`:
    never interrupted. With no `--timeout`, there is no idle timeout at all. The
    idle-close line names the client it closed (`Closing idle connection from
    <client> ...`), so it is self-correlating even without the `[#N]` tag.
+5. When the connection ends — on *every* path: both relays finished, the idle
+   timeout, a failed connect, or the runtime dropping the task at Ctrl-C (even one
+   never polled) — its `ConnStats` record is dropped after everything else and logs
+   the **close summary** at `info` (unless `--no-close-summary`):
+   `[#N] Closed connection from <client> (<reason>): client -> server <N> B, server ->
+   client <M> B in <S>.<mmm>s`. It is always the connection's last line, after its
+   `-`/`x` teardown records. The counts are the bytes read from each side
+   (`client -> server` equals the total of the `<` lines exactly; `server -> client`
+   the `>` lines, plus at most one 2 KiB chunk read but never delivered when a write
+   to the client failed or was cut short); the duration runs from the accept, at
+   millisecond resolution whatever `--precision` says. The reasons are `client
+   finished sending first` / `server finished sending first`, `client-side error:
+   <io::ErrorKind>` / `server-side error: <io::ErrorKind>`, `idle timeout`, `connect to
+   destination failed` and `interrupted`, the overriding two with an optional
+   `after <first ending>`. Because `relay()` forwards an RST to the other peer as an
+   ordinary close and the `!` error records read the same for either side, the
+   summary is the only line that names the side that failed. "First" is the order
+   the proxy observed; ties within one poll are arbitrary (a tie at the relays' very
+   first poll names the client, because `tokio::join!` polls its first branch first).
 
 ### Logging / de-duplication detail (intentional)
 
@@ -230,12 +300,12 @@ console sink is `ConsoleLogger` at the `"debug"` label.
 
 Every console line belonging to a connection starts with a `[#N] ` tag — the
 id minted at accept. **Both** connections' `ConsoleLogger`s are built with
-`.with_prefix("[#N] ")` (note the trailing space: logged-stream 0.7.0 renders the
-prefix verbatim immediately before the record-kind character, with no separator of
-its own), and the per-connection lifecycle lines emitted via `log::info!`/
+`.with_prefix("[#N] ")` (note the trailing space: logged-stream renders the prefix
+verbatim immediately before the record-kind character, with no separator of its
+own), and the per-connection lifecycle lines emitted via `log::info!`/
 `log::error!` — the accept line, the connect-failure error, both `Connected to
-destination` variants, and the idle-close line — carry the same tag, so every
-line of a connection is attributable. Only listener-level lines (bind, accept
+destination` variants, the idle-close line and the close summary — carry the same
+tag, so every line of a connection is attributable. Only listener-level lines (bind, accept
 errors) are untagged. `--no-connection-ids` disables the tags: the prefix becomes
 the empty string, which `ConsoleLogger` renders byte-for-byte like no prefix, so
 the untagged output shape is reproduced exactly. The stream records — payload,
@@ -253,12 +323,17 @@ Runtime failures are handled gracefully rather than by panicking:
   connection's `[#N]` id); that one connection
   is dropped cleanly (closing the client), the listener keeps serving other clients.
   (A `hostname:port` remote is resolved per connection, so an unresolvable name is
-  handled exactly like an unreachable address.)
+  handled exactly like an unreachable address.) Its close summary reads `(connect to
+  destination failed)`, with nothing relayed.
 - **Per-connection relay errors** — end that direction and tear the connection
-  down (see the relay description above); they never abort the process.
+  down (see the relay description above); they never abort the process. The close
+  summary names the side whose socket failed (`client-side error: ...`).
 - **Ctrl-C (SIGINT)** — stops the accept loop; in-flight connections are closed as
-  the runtime shuts down and the process exits `0`. No ports or connections are
-  left behind after exit.
+  the runtime shuts down — each logging an `(interrupted)` close summary after the
+  `Received shutdown signal` line — and the process exits `0`. No ports or
+  connections are left behind after exit. SIGTERM, SIGKILL and SIGHUP are not
+  handled: they end the process without running destructors, so they print no
+  summaries.
 
 (The `ConsoleLogger::new_unchecked("debug")` calls take a compile-time-constant,
 valid level, so they cannot panic at runtime.)
@@ -273,7 +348,7 @@ valid level, so they cannot panic at runtime.)
 - `clap` (`std`, `derive`) — CLI parsing.
 - `env_logger` + `log` — logging frontend/facade.
 - `bytes` — `BytesMut` relay buffers.
-- `logged-stream` (`0.7.0`) — the companion crate (same author) that provides
+- `logged-stream` (`0.8.0`) — the companion crate (same author) that provides
   `LoggedStream`, the `BufferFormatter` implementations
   (`DecimalFormatter`, `LowercaseHexadecimalFormatter`,
   `UppercaseHexadecimalFormatter`, `BinaryFormatter`, `OctalFormatter`),
@@ -301,6 +376,7 @@ to its users):
 -s, --separator <STRING>                     byte separator in output [default: ":"]
 -p, --precision <PRECISION>                  [default: seconds]  seconds|milliseconds|microseconds|nanoseconds
 -n, --no-connection-ids                      disable the per-connection [#N] id tag on console output lines
+-x, --no-close-summary                       disable the per-connection close summary line
 ```
 
 `--bind-listener-addr` is parsed as `std::net::SocketAddr`, so it must be a literal
@@ -371,6 +447,10 @@ The suite is grouped into submodules by behavior ([`relay`](src/tests/relay.rs),
 lifecycle lines and the `--no-connection-ids` opt-out; the payload lines log at
 `debug`, which the shared capture deliberately filters out, so their tags are
 pinned by the black-box script instead —
+[`close_summary`](src/tests/close_summary.rs) — the close summary: its rendering and
+attribution rule as plain data, then one real connection per way a connection can
+end, the counts across many chunks, the runtime-drop (`interrupted`) path on every
+OS, and the `--no-close-summary` opt-out —
 and [`formatting`](src/tests/formatting.rs) — the only module with no I/O at all: it
 pins what each `--formatting` mode renders and where `--separator` is placed),
 plus two scaffolding-only modules:
@@ -393,6 +473,12 @@ Conventions that keep the tree tidy:
 - `cargo test` runs the whole tree in **one process** with tests in parallel, so any
   assertion on captured log output must key off that test's own unique ephemeral
   address rather than the contents of the shared buffer.
+- A line that trails what the client can observe — the close summary is logged only
+  after the proxy has passed the close on to both peers — is awaited with
+  `log_capture::wait_for_line` (a bounded poll), never read once. Spell out the whole
+  expected line up to its variable tail (the duration) in the awaited prefix: a
+  closed client's port can be reused by a later test's client, and a loose prefix
+  could then match that test's stale line.
 
 They are fully self-contained and portable:
 
@@ -446,10 +532,15 @@ covers several cases:
   listener-readiness probe is itself an accepted connection, so the data
   connection is never simply `#1`. The Drop-record wait is a bounded poll over a
   stdout-drain thread, not a fixed sleep (the records are emitted only after the
-  handlers observe both EOFs, and SIGTERM discards unwritten records).
+  handlers observe both EOFs, and SIGTERM discards unwritten records). Each
+  connection also has **exactly one** close summary, with its own counts (the two
+  payloads differ in length), and `--no-connection-ids` leaves the summary untagged.
+- **no close summary** — `--no-close-summary` removes the summary (checked once the
+  connection's two Drop records, which the summary would follow at once, are out)
+  while the payload and accept lines still print.
 - **level filtering** — the payload appears at `--level debug` and is suppressed at
-  `--level info`, while the `INFO` lifecycle lines still print (so the absence
-  cannot pass vacuously).
+  `--level info`, while the `INFO` lifecycle lines — the close summary included —
+  still print (so the absence cannot pass vacuously).
 - **hostname remote** — relays through a `localhost:<port>` remote (DNS-resolved)
   and logs the tagged resolved-destination INFO line.
 - **real HTTP** — a real request/response (stdlib `http.server` + `urllib`) is
@@ -458,11 +549,11 @@ covers several cases:
   hand-built with `struct`) is relayed, and the proxy is checked to have logged
   the request frame in hex.
 - **unreachable remote** — with the remote down, the proxy logs the failure
-  (tagged with the connection's id), closes the client cleanly, keeps serving,
-  and does not print a panic.
+  (tagged with the connection's id) and a `(connect to destination failed)` close
+  summary, closes the client cleanly, keeps serving, and does not print a panic.
 - **unresolvable remote** — a hostname that never resolves (`.invalid`) is
-  handled like an unreachable address: the tagged failure is logged, the client
-  closed, the proxy keeps serving.
+  handled like an unreachable address: the tagged failure and the close summary are
+  logged, the client closed, the proxy keeps serving.
 - **bind failure** — binding an in-use address exits non-zero without panicking.
 - **threads** — the proxy serves with a non-default `--threads` count and
   rejects `0`.
@@ -474,10 +565,15 @@ covers several cases:
   - the server and the proxy are each awaited through their ready line (no probe
     connection), then the client runs to completion;
   - the recipe's `expect`/`absent` lines are asserted per terminal, along with
-    clean peer exits and the client being the proxy's `[#1]` and only connection.
+    clean peer exits, the client being the proxy's `[#1]` and only connection, and
+    the close summary being that connection's last line (the ordered `expect`
+    needles alone would let a stray line after it pass).
 
   See [Manual testing](#manual-testing).
-- **Ctrl-C** — SIGINT shuts the proxy down with exit code `0` (POSIX only).
+- **Ctrl-C** — SIGINT shuts the proxy down with exit code `0` (POSIX only). A client
+  held open mid-conversation gets an `(interrupted)` close summary with its counts,
+  after the `Received shutdown signal` line, and the ids of the `Incoming connection`
+  and `Closed connection` lines match one to one (the readiness probe included).
 
 It uses only the Python standard library (no `pip` packages), so it runs the same
 on Linux/macOS/Windows. Run it manually with:
@@ -503,6 +599,10 @@ Invariants to keep when editing it:
     client), never "sent"/"received".
   - Payloads render exactly like the proxy's `-f`/`-s`. The black-box test checks
     every byte value against the renderings it pins on the binary.
+  - The peers' closing line, `x closed: sent N B, received M B`, reconciles with the
+    proxy's close summary (`client -> server` is the client's `sent` and the
+    server's `received`); the `directions` and `server-close` recipes pin both
+    sides, so a change to either count must keep them agreeing.
 - **No probe connections.** The client retries only a *refused* connect, so the
   first client is the proxy's `[#1]`.
 - **No accidental RSTs.** The default ending sends FIN and waits for the other

@@ -1,19 +1,26 @@
 //! The networking core: bind and serve, accept connections, dial the destination,
 //! and pump bytes between the two in both directions.
 //!
-//! Two per-connection concerns live in submodules of this one, so the file reads as
+//! Three per-connection concerns live in submodules of this one, so the file reads as
 //! an uninterrupted connection lifecycle:
 //!
 //! - [`logging`] — the `[#N] ` console tag and the `ConnLog` facade every
 //!   per-connection line is logged through.
+//! - [`stats`] — the `ConnStats` record behind each connection's accept line and
+//!   close summary, and the byte counters it keeps.
 //! - [`idle`] — the activity clock and watchdog behind `--timeout`.
 
 mod idle;
 pub(crate) mod logging;
+pub(crate) mod stats;
 
 use self::idle::ActivityClock;
 use self::idle::wait_until_idle;
-use self::logging::ConnLog;
+use self::stats::ConnStats;
+use self::stats::Direction;
+use self::stats::RelayEnd;
+use self::stats::RelayStats;
+use self::stats::Teardown;
 use crate::args::Arguments;
 use crate::args::TargetAddr;
 use crate::args::get_formatter_by_kind;
@@ -23,7 +30,6 @@ use logged_stream::DefaultFilter;
 use logged_stream::LoggedStream;
 use logged_stream::RecordKind;
 use logged_stream::RecordKindFilter;
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncRead;
@@ -53,7 +59,8 @@ pub async fn initialize_tcp_listener(arguments: Arguments) -> io::Result<()> {
     // Serve until interrupted. `run_accept_loop` never returns on its own, so the
     // `select!` runs the accept loop until Ctrl-C (SIGINT) fires, then stops
     // accepting. Dropping the accept-loop future closes the listener and releases
-    // the port; in-flight connections are torn down when the runtime shuts down.
+    // the port; in-flight connections are torn down when the runtime shuts down,
+    // each logging its `(interrupted)` close summary as its task is dropped.
     tokio::select! {
         _ = run_accept_loop(listener, arguments) => {}
         result = tokio::signal::ctrl_c() => match result {
@@ -103,11 +110,22 @@ pub(crate) async fn run_accept_loop(listener: tokio_net::TcpListener, arguments:
                 accept_backoff = ACCEPT_BACKOFF_MIN; // recovered -> reset the backoff
                 let conn_id = next_conn_id;
                 next_conn_id += 1;
-                let conn_log = ConnLog::new(&arguments, conn_id);
-                conn_log.info(format_args!("Incoming connection from {addr}"));
+                // The connection's record: it logs the accept line now and the close
+                // summary when it is dropped. It is created here and moved into the
+                // task, rather than created by the handler, because the runtime can
+                // drop a spawned task before its first poll (Ctrl-C right after this
+                // accept), and an async fn's body never runs until it is polled. Keep
+                // any `.await` out of the code between here and the spawn.
+                let conn_stats = ConnStats::accepted(&arguments, conn_id, addr);
                 tokio::spawn(async move {
-                    incoming_connection_handle(cloned_arguments, stream, conn_log, addr).await;
-                    drop(permit); // release the slot once the connection is done
+                    // Lent rather than moved: the handler's future, which owns both
+                    // `LoggedStream`s, borrows the record, so it is always dropped
+                    // first — when the handler returns, and when the runtime drops
+                    // this task mid-`.await` at Ctrl-C. That is what makes the
+                    // summary the connection's last line.
+                    incoming_connection_handle(cloned_arguments, stream, &conn_stats).await;
+                    drop(conn_stats); // logs the close summary
+                    drop(permit); // then release the slot once the connection is done
                 });
             }
             Err(e) => {
@@ -142,9 +160,9 @@ async fn connect_to_target(target: &TargetAddr) -> io::Result<tokio_net::TcpStre
 async fn incoming_connection_handle(
     arguments: Arguments,
     source_stream: tokio_net::TcpStream,
-    conn_log: ConnLog,
-    client_addr: SocketAddr,
+    conn_stats: &ConnStats,
 ) {
+    let conn_log = conn_stats.conn_log();
     let (source_stream_read_half, source_stream_write_half) = io::split(LoggedStream::new(
         source_stream,
         get_formatter_by_kind(arguments.formatting, arguments.separator.as_str()),
@@ -158,6 +176,7 @@ async fn incoming_connection_handle(
                 "Failed to connect to destination {}: {error}",
                 arguments.remote_addr
             ));
+            conn_stats.record_teardown(Teardown::ConnectFailed);
             // Returning drops the source halves, closing the client connection.
             return;
         }
@@ -200,30 +219,47 @@ async fn incoming_connection_handle(
     // for the timeout. Activity in either direction resets it (via the shared
     // `ActivityClock`), so an actively-transferring one-directional connection is
     // never interrupted.
+    //
+    // Both relays (and the watchdog) share per-connection state — the `ConnStats`
+    // counters behind these handles and, with `--timeout`, the `ActivityClock` — as
+    // sub-futures of *this* task: they are composed with `join!`/`select!`, never
+    // spawned. That is the premise of the `Relaxed` ordering documented on
+    // [`ActivityClock`](idle::ActivityClock) and on `ConnStats`; keep them composed
+    // here.
+    let client_to_server = conn_stats.direction(Direction::ClientToServer);
+    let server_to_client = conn_stats.direction(Direction::ServerToClient);
     match arguments.timeout {
         None => {
             tokio::join!(
-                relay(source_stream_read_half, destination_stream_write_half, None),
-                relay(destination_stream_read_half, source_stream_write_half, None),
+                relay(
+                    source_stream_read_half,
+                    destination_stream_write_half,
+                    client_to_server,
+                    None,
+                ),
+                relay(
+                    destination_stream_read_half,
+                    source_stream_write_half,
+                    server_to_client,
+                    None,
+                ),
             );
         }
         Some(seconds) => {
             let idle = Duration::from_secs(seconds);
-            // Both relays and the watchdog below share this clock as sub-futures of
-            // *this* task — they are composed with `join!`/`select!`, never spawned.
-            // That is the premise of the `Relaxed` ordering documented on
-            // [`ActivityClock`](idle::ActivityClock); keep them composed here.
             let clock = ActivityClock::new();
             let relays = async {
                 tokio::join!(
                     relay(
                         source_stream_read_half,
                         destination_stream_write_half,
+                        client_to_server,
                         Some(&clock),
                     ),
                     relay(
                         destination_stream_read_half,
                         source_stream_write_half,
+                        server_to_client,
                         Some(&clock),
                     ),
                 );
@@ -238,11 +274,13 @@ async fn incoming_connection_handle(
                 _ = relays => {}
                 _ = async {
                     wait_until_idle(&clock, idle).await;
+                    conn_stats.record_teardown(Teardown::IdleTimeout);
                     // The client address makes the line self-correlating even where
                     // the `[#N]` tag is absent (`--no-connection-ids`) or ambiguous
                     // (ids restart at 1 for every proxy run).
                     conn_log.info(format_args!(
-                        "Closing idle connection from {client_addr} after {seconds}s of inactivity"
+                        "Closing idle connection from {} after {seconds}s of inactivity",
+                        conn_stats.client_addr()
                     ));
                 } => {}
             }
@@ -253,35 +291,42 @@ async fn incoming_connection_handle(
 /// Copy bytes from `reader` to `writer` until the stream ends or an I/O error
 /// occurs, then shut the writer down so the close is forwarded to its peer.
 ///
-/// Each non-empty chunk is recorded on the shared `activity` clock (when one is
-/// provided), so the connection's idle-timeout watchdog can tell that this
-/// direction is still moving data. The copy ends when `reader` reaches
-/// end-of-stream (`read_buf` yields `Ok(0)`) or a read/write fails; treating a
-/// zero-length read as end-of-stream (rather than retrying) is what stops a closed
-/// peer from being polled in a tight loop. On return the writer is shut down (a
-/// half-close); because the opposite direction is driven to completion
-/// independently, any data still in flight there is delivered before the
-/// connection closes.
-async fn relay<R, W>(mut reader: R, mut writer: W, activity: Option<&ActivityClock>)
-where
+/// Each non-empty chunk is counted on this direction's `stats` handle as soon as it
+/// is read, and recorded on the shared `activity` clock (when one is provided), so
+/// the connection's idle-timeout watchdog can tell that this direction is still
+/// moving data. The copy ends when `reader` reaches end-of-stream (`read_buf` yields
+/// `Ok(0)`) or a read/write fails; treating a zero-length read as end-of-stream
+/// (rather than retrying) is what stops a closed peer from being polled in a tight
+/// loop. How it ended is reported to `stats` for the close summary, and the writer
+/// is then shut down (a half-close); because the opposite direction is driven to
+/// completion independently, any data still in flight there is delivered before
+/// the connection closes.
+async fn relay<R, W>(
+    mut reader: R,
+    mut writer: W,
+    stats: RelayStats<'_>,
+    activity: Option<&ActivityClock>,
+) where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
     let mut buffer = BytesMut::with_capacity(2048);
-    // The loop ends on a read error (the `while let` binding fails), on end-of-stream
-    // (`read_length == 0`), or on a write error.
-    while let Ok(read_length) = reader.read_buf(&mut buffer).await {
-        if read_length == 0 {
-            break;
-        }
+    let end = loop {
+        let read_length = match reader.read_buf(&mut buffer).await {
+            Ok(0) => break RelayEnd::Eof,
+            Ok(read_length) => read_length,
+            Err(error) => break RelayEnd::ReadFailed(error.kind()),
+        };
+        stats.received(read_length);
         if let Some(activity) = activity {
             activity.record();
         }
-        if writer.write_all(&buffer[0..read_length]).await.is_err() {
-            break;
+        if let Err(error) = writer.write_all(&buffer[0..read_length]).await {
+            break RelayEnd::WriteFailed(error.kind());
         }
         buffer.clear();
-    }
+    };
+    stats.finished(end);
     // Forward the end-of-stream to the peer (half-close). Errors are ignored: the
     // writer may already be closed by a failed write or by the peer.
     let _ = writer.shutdown().await;

@@ -109,6 +109,43 @@ fn connection_ids_default_on_with_no_connection_ids_opt_out() {
     );
 }
 
+/// The close summary is on by default and `--no-close-summary` is the opt-out: the
+/// flag takes no value and flips the positively-named `close_summary` field to
+/// `false`.
+#[test]
+fn close_summary_default_on_with_no_close_summary_opt_out() {
+    use clap::Parser;
+
+    fn parse(extra: &[&str]) -> Result<Arguments, clap::Error> {
+        let mut argv = vec!["logged_tcp_proxy", "-b", "127.0.0.1:0", "-r", "127.0.0.1:0"];
+        argv.extend_from_slice(extra);
+        Arguments::try_parse_from(argv)
+    }
+
+    assert!(
+        parse(&[])
+            .expect("omitting --no-close-summary should parse")
+            .close_summary,
+        "the close summary must be enabled by default"
+    );
+    assert!(
+        !parse(&["--no-close-summary"])
+            .expect("--no-close-summary should parse")
+            .close_summary,
+        "--no-close-summary must disable the close summary"
+    );
+    assert!(
+        !parse(&["-x"])
+            .expect("the -x short flag should parse")
+            .close_summary,
+        "-x is the short alias for --no-close-summary",
+    );
+    assert!(
+        parse(&["--no-close-summary", "true"]).is_err(),
+        "the flag takes no value"
+    );
+}
+
 /// Every option's short flag, pinned to the letter it has always had.
 ///
 /// The letters are written out in [`Arguments`] rather than derived, because a bare
@@ -162,6 +199,7 @@ fn short_flags_are_pinned_and_unique() {
         ('s', "separator"),
         ('t', "timeout"),
         ('w', "threads"),
+        ('x', "no-close-summary"),
     ]
     .into_iter()
     .map(|(short, long)| (short, long.to_string()))
