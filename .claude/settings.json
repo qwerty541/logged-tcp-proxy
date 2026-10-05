@@ -1,0 +1,58 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Edit",
+      "Write",
+
+      "WebSearch",
+      "WebFetch(domain:raw.githubusercontent.com)",
+
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git diff-tree:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(git remote:*)",
+      "Bash(git fetch:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git rev-list:*)",
+      "Bash(git merge-base:*)",
+      "Bash(git merge-tree:*)",
+      "Bash(git grep:*)",
+      "Bash(git ls-files:*)",
+      "Bash(git ls-tree:*)",
+      "Bash(git check-ignore:*)",
+      "Bash(git cat-file:*)",
+      "Bash(git for-each-ref:*)",
+      "Bash(git check-attr:*)",
+      "Bash(git patch-id:*)",
+
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(cut:*)",
+      "Bash(grep:*)",
+      "Bash(find:*)",
+      "Bash(tree:*)",
+      "Bash(pwd:*)",
+      "Bash(which:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(wc:*)",
+      "Bash(mkdir:*)",
+      "Bash(echo:*)",
+      "Bash(sed --sandbox -n:*)",
+      "Bash(sort:*)",
+      "Bash(uniq:*)",
+      "Bash(rg:*)",
+      "Bash(printf:*)",
+      "Bash(tr:*)",
+      "Bash(bc:*)",
+      "Bash(jq:*)",
+      "Bash(tac:*)"
+    ]
+  },
+  "respectGitignore": true,
+  "cleanupPeriodDays": 90
+}
