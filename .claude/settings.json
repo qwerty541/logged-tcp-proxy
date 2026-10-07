@@ -51,6 +51,10 @@
       "Bash(bc:*)",
       "Bash(jq:*)",
       "Bash(tac:*)"
+    ],
+    "deny": [
+      "Bash(find * -delete)",
+      "Bash(find * -exec rm )"
     ]
   },
   "respectGitignore": true,
