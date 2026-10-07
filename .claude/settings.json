@@ -28,6 +28,8 @@
       "Bash(git for-each-ref:*)",
       "Bash(git check-attr:*)",
       "Bash(git patch-id:*)",
+      "Bash(git name-rev:*)",
+      "Bash(git describe:*)",
 
       "Bash(ls:*)",
       "Bash(cat:*)",
@@ -50,7 +52,11 @@
       "Bash(tr:*)",
       "Bash(bc:*)",
       "Bash(jq:*)",
-      "Bash(tac:*)"
+      "Bash(tac:*)",
+      "Bash(md5sum:*)",
+      "Bash(sha256sum:*)",
+      "Bash(diff:*)",
+      "Bash(cmp:*)"
     ],
     "deny": [
       "Bash(find * -delete)",
