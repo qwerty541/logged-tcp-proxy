@@ -42,4 +42,9 @@ fn main() {
     {
         std::process::exit(1);
     }
+
+    // After Ctrl-C, `runtime` is dropped here, at the end of `main`, and it must stay
+    // that way (no `shutdown_background()`, no `process::exit` on this path): its drop
+    // cancels every connection still open, which is what logs each one's
+    // `(interrupted)` close summary, and it waits for that before the process exits.
 }

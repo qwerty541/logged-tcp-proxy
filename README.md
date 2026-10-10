@@ -63,12 +63,18 @@ uppercase), decimal, octal, or binary, with a configurable byte separator.
 - Tags every console line belonging to a connection with a per-connection id
   (`[#1]`, `[#2]`, ...), so the interleaved output of concurrent connections can be
   told apart (disable with `--no-connection-ids`).
+- Ends every connection with a one-line summary: the bytes relayed in each direction,
+  how long it was open, and how it ended — which side finished sending first, an
+  error on either side's socket (naming the side), the idle timeout, a failed
+  destination connect, or Ctrl-C. It is logged at `info`, so it stays visible with
+  `--level info` (disable with `--no-close-summary`).
 - Optional whole-connection idle timeout (`--timeout`); waits indefinitely by default.
 - Bounded concurrency with backpressure (`--max-connections`, default 512) — serves
   many clients at once and stops accepting new ones only when at capacity.
 - Configurable async runtime worker threads (`--threads`, default 4).
 - Configurable timestamp precision (`--precision`) and logging level (`--level`).
-- Graceful shutdown on Ctrl-C (exits with status 0).
+- Graceful shutdown on Ctrl-C (exits with status 0), summarizing every connection
+  still open.
 
 ## Installation
 
@@ -131,9 +137,12 @@ curl http://127.0.0.1:20502/
 
 The request and response bytes now appear in the proxy's console, each line tagged
 with the connection's id (`[#1]`) and marked `<` (bytes read from the client) or `>`
-(bytes written back to it). Press Ctrl-C to stop the proxy; it shuts down cleanly and
-exits with status `0`. See the [Example](#example) below for an annotated run and how
-to read the output.
+(bytes written back to it). When `curl` finishes, the connection's last line is its
+close summary — `[#1] Closed connection from ... (client finished sending first): ...`
+— with the bytes relayed in each direction and how long it was open. Press Ctrl-C to
+stop the proxy; it shuts down cleanly and exits with status `0`, logging an
+`(interrupted)` summary for any connection still open. See the [Example](#example)
+below for an annotated run and how to read the output.
 
 > [!TIP]
 > Working from a clone of the repository? `scripts/peer.py` provides a scriptable client
@@ -145,7 +154,8 @@ to read the output.
 > something is already listening. If nothing is there — or the hostname does not
 > resolve — the proxy logs a `Failed to connect to destination ...` line (tagged with
 > that connection's `[#N]` id), closes that client, and keeps serving other
-> connections — no payload is printed.
+> connections — no payload is printed, and the client's close summary reads
+> `(connect to destination failed)`.
 
 ## Options
 
@@ -164,13 +174,15 @@ Below are the supported command-line options. The general form is
 | `-s, --separator` | Byte separator in the console payload output | `:` | any string |
 | `-p, --precision` | Timestamp precision | `seconds` | `seconds`, `milliseconds`, `microseconds`, `nanoseconds` |
 | `-n, --no-connection-ids` | Disable the per-connection id tag (`[#N]`) on console output lines, e.g. when only a single connection is proxied and the tags add nothing | _(ids enabled)_ | _(flag, takes no value)_ |
+| `-x, --no-close-summary` | Disable the summary line logged when each connection closes (how it ended, the bytes relayed in each direction and how long it was open) | _(summary enabled)_ | _(flag, takes no value)_ |
 
 Run `logged_tcp_proxy --help` for the canonical usage output (it also lists `-h, --help` and `-V, --version`).
 
 > [!NOTE] 
 > the relayed payload is logged at the `debug` level. Keep `--level` at
 > `debug` (the default) or `trace` to see it — setting `--level info` or higher hides
-> the payload and leaves only the lifecycle (`INFO`) lines.
+> the payload and leaves only the lifecycle (`INFO`) lines, including each
+> connection's close summary.
 
 ## Example
 
@@ -190,23 +202,52 @@ $ logged_tcp_proxy --bind-listener-addr 127.0.0.1:20502 --remote-addr 127.0.0.1:
 [2023-05-04T02:39:37Z DEBUG] [#1] < 00:03:00:00:00:04:01:01:01:01:00:04:00:00:00:04:01:02:01:01:00:05:00:00:00:23:01:03:20:00:7b:00:0c:ff:ff:ff:ff:ff:ff:ff:ff:ff:ff:ff:ff:01:36:40:49:0f:db:40:09:21:fb:54:44:2d:18:ff:ff:00:06:00:00:00:05:01:03:02:ff:ff:00:07:00:00:00:05:01:03:02:00:01:00:08:00:00:00:03:01:83:02:00:09:00:00:00:09:01:03:06:00:01:00:02:00:03:00:0a:00:00:00:05:01:04:02:00:7b
 [2023-05-04T02:40:18Z DEBUG] [#1] > 00:0b:00:00:00:06:6f:03:03:e8:00:01
 [2023-05-04T02:40:18Z DEBUG] [#1] < 00:0b:00:00:00:05:6f:03:02:00:00
+[2023-05-04T02:40:18Z DEBUG] [#1] - Writer shutdown request.
+[2023-05-04T02:40:18Z DEBUG] [#1] x Deallocated.
+[2023-05-04T02:40:18Z INFO] [#1] Closed connection from 127.0.0.1:50376 (client finished sending first): client -> server 196 B, server -> client 149 B in 41.208s
 ```
 
 How to read this output:
 
 - `INFO` lines are lifecycle events — the listener binding (`Listener bound to ...`,
-  the proxy's "ready" signal) and each accepted connection (`Incoming connection from ...`).
+  the proxy's "ready" signal), each accepted connection (`Incoming connection from ...`)
+  and its close summary (`Closed connection from ...`, see below).
 - `[#N]` is the per-connection id, assigned in accept order starting at 1: every line
-  belonging to that connection — the `Incoming connection` line and its payload lines —
-  carries the same id. When several clients are connected at once, their lines
-  interleave and the id is what tells them apart. Listener-level lines (the bind
-  line, accept errors) carry no id. Disable the tags with `--no-connection-ids`.
+  belonging to that connection — the `Incoming connection` line, its payload lines and
+  its close summary — carries the same id. When several clients are connected at once,
+  their lines interleave and the id is what tells them apart. Listener-level lines (the
+  bind line, accept errors) carry no id. Disable the tags with `--no-connection-ids`.
 - `DEBUG` lines are the relayed payload, shown here in the default lowercase-hex
-  format with `:` separators (change with `--formatting` and `--separator`).
+  format with `:` separators (change with `--formatting` and `--separator`), followed
+  by the connection's teardown: `-` when the proxy passes a close on to one side
+  (`Writer shutdown request.`) and `x` when it releases a socket (`Deallocated.`).
 - `<` marks bytes **read from the client** (source) side; `>` marks bytes **written
   back to the client** (these originate from the remote server).
 - Both directions of the conversation are logged once, on the client (source)
   connection, so the same bytes are never printed twice.
+- A connection's last line is its close summary, logged at `INFO`, so it stays
+  visible with `--level info` (disable it with `--no-close-summary`):
+  - `client -> server` counts the bytes read from the client — the total of the `<`
+    lines — and `server -> client` the bytes read from the server — the total of the
+    `>` lines, plus at most one 2 KiB chunk that could not be delivered when writing to
+    the client failed.
+  - `in` is the time since the proxy accepted the connection.
+  - The reason in parentheses says how the connection ended, as the proxy observed it:
+    - `client finished sending first` / `server finished sending first`: that side
+      closed its sending side first (in TCP terms, sent a FIN). The other side may
+      still have sent data afterwards, which is relayed and counted.
+    - `client-side error: ...` / `server-side error: ...`: an error on the proxy's
+      socket to that side, such as `connection reset`. The `!` error line before it
+      has the operating system's own message, but not which side it was.
+    - `idle timeout`: `--timeout` closed the connection.
+    - `connect to destination failed`: connecting to `--remote-addr` (or resolving its
+      name) failed, so nothing was relayed.
+    - `interrupted`: the proxy was stopped with Ctrl-C while the connection was open.
+
+    An `after ...` suffix keeps how one direction had already ended, e.g.
+    `idle timeout after client finished sending`.
+  - Every `Incoming connection` line is matched by one `Closed connection` line, unless
+    the proxy is killed (e.g. with SIGTERM), which prints no summaries.
 - The leading `[...Z ...]` is the timestamp, at `--precision` granularity.
 
 ## License

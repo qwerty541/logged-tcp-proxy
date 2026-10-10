@@ -192,11 +192,41 @@ def drain_proxy_output(proxy, thread, lines):
     return "".join(lines)
 
 
-def assert_tagged_connect_failure(output, case):
-    """Assert the tagged connect-failure line was logged. Presence, not a count:
-    the listener-readiness probe produces its own tagged failure line too."""
+def wait_for_output(lines, pattern):
+    """Poll the lines a drain thread captured (see `start_output_drain`), bounded
+    by IO_TIMEOUT, until `pattern` matches the output so far. Returns the match,
+    or None on timeout. Used for lines that trail what a client can observe on its
+    own socket, such as a connection's close summary, which a SIGTERM from
+    `drain_proxy_output` would otherwise discard before they are written."""
+    deadline = time.monotonic() + IO_TIMEOUT
+    while True:
+        found = re.search(pattern, "".join(lines))
+        if found or time.monotonic() >= deadline:
+            return found
+        time.sleep(0.05)
+
+
+def summary_pattern(port, reason, client_to_server, server_to_client, conn_id=r"\d+"):
+    """A regex for the close summary of the client on local `port`, with exactly
+    this reason and these byte counts, ending in its `<secs>.<millis>s` duration.
+    Tagged with `conn_id` (any id by default), or untagged when it is None (the
+    `--no-connection-ids` form)."""
+    tag = "" if conn_id is None else r"\[#%s\] " % conn_id
+    return (r"%sClosed connection from %s:%d \(%s\): client -> server %d B, "
+            r"server -> client %d B in \d+\.\d{3}s"
+            % (tag, re.escape(HOST), port, re.escape(reason), client_to_server,
+               server_to_client))
+
+
+def assert_tagged_connect_failure(output, case, client_port):
+    """Assert the tagged connect-failure line was logged (presence, not a count:
+    the listener-readiness probe produces its own tagged failure line too), and
+    that the client on `client_port` got its close summary, with nothing relayed."""
     if not re.search(r"\[#\d+\] Failed to connect to destination", output):
         fail("[%s] the tagged connect-failure line was not logged" % case, output)
+    if not re.search(summary_pattern(client_port, "connect to destination failed", 0, 0),
+                     output):
+        fail("[%s] the failed connection's close summary was not logged" % case, output)
 
 
 def recv_exact(sock, count):
@@ -425,9 +455,10 @@ def test_connection_id_tags(binary):
     # discards records the proxy has not yet written.
     drain, log_lines = start_output_drain(proxy)
     # Letter-bearing bytes, so the hex renderings can never collide with an
-    # RFC 3339 timestamp (see test_direction_markers_and_no_double_logging).
+    # RFC 3339 timestamp (see test_direction_markers_and_no_double_logging). The
+    # lengths differ, so each connection's close summary shows its own counts.
     payload_a = bytes([0x0A, 0x1B, 0x2C])
-    payload_b = bytes([0xD3, 0xE4, 0xF5])
+    payload_b = bytes([0xD3, 0xE4, 0xF5, 0xA6])
     hex_a = ":".join("%02x" % b for b in payload_a)
     hex_b = ":".join("%02x" % b for b in payload_b)
 
@@ -462,12 +493,13 @@ def test_connection_id_tags(binary):
         id_a = id_for("".join(log_lines), port_a, "first")
         id_b = id_for("".join(log_lines), port_b, "second")
         # Wait (bounded) for both connections' Drop records — emitted only after
-        # each handler observes both EOFs and drops its two LoggedStreams — before
-        # terminating the proxy.
+        # each handler observes both EOFs and drops its two LoggedStreams — and for
+        # their close summaries, which follow them, before terminating the proxy.
         deadline = time.time() + IO_TIMEOUT
         while time.time() < deadline:
             text = "".join(log_lines)
-            if all(text.count("[#%s] x Deallocated." % i) >= 2 for i in (id_a, id_b)):
+            if all(text.count("[#%s] x Deallocated." % i) >= 2
+                   and ("[#%s] Closed connection from " % i) in text for i in (id_a, id_b)):
                 break
             time.sleep(0.05)
     finally:
@@ -494,6 +526,20 @@ def test_connection_id_tags(binary):
             fail("[conn-ids] expected exactly 2 tagged Drop records for the %s "
                  "connection (#%s), got %d" % (label, conn_id, drops), output)
 
+    # Exactly one close summary per connection, carrying that connection's own
+    # counts (3 B each way for the first, 4 B for the second): the overlapping
+    # connections do not share counters.
+    for conn_id, port, length, label in ((id_a, port_a, len(payload_a), "first"),
+                                         (id_b, port_b, len(payload_b), "second")):
+        summaries = output.count("[#%s] Closed connection from " % conn_id)
+        if summaries != 1:
+            fail("[conn-ids] expected exactly 1 close summary for the %s connection "
+                 "(#%s), got %d" % (label, conn_id, summaries), output)
+        if not re.search(summary_pattern(port, "client finished sending first", length,
+                                         length, conn_id), output):
+            fail("[conn-ids] the %s connection's close summary does not count its own "
+                 "%d B each way" % (label, length), output)
+
     print("OK [conn-ids] concurrent connections carry distinct ids #%s and #%s"
           % (id_a, id_b))
 
@@ -503,9 +549,10 @@ def test_no_connection_ids_flag(binary):
 
     The output returns to the untagged shape: no `[#` appears anywhere (the
     env_logger `[ts LEVEL]` framing never contains that sequence), while the
-    payload and lifecycle lines still print."""
+    payload and lifecycle lines — the close summary included — still print."""
     echo_server, echo_port = start_echo_server()
     proxy, proxy_port = start_proxy(binary, echo_port, extra_args=("--no-connection-ids",))
+    drain, log_lines = start_output_drain(proxy)
     payload = bytes([0x5A, 0x6B, 0x7C])
     payload_hex = ":".join("%02x" % b for b in payload)
     try:
@@ -513,23 +560,75 @@ def test_no_connection_ids_flag(binary):
             fail("[no-conn-ids] proxy did not start listening")
         with socket.create_connection((HOST, proxy_port), timeout=IO_TIMEOUT) as client:
             client.settimeout(IO_TIMEOUT)
+            client_port = client.getsockname()[1]
             client.sendall(payload)
             if recv_exact(client, len(payload)) != payload:
                 fail("[no-conn-ids] echo mismatch")
-        # No flush wait needed: the asserted payload and accept lines are logged
-        # before the client can receive its echo, and the `[#` check is an absence.
+        # The payload and accept lines are logged before the client can receive
+        # its echo; only the close summary trails the close, so wait for it.
+        untagged_summary = summary_pattern(client_port, "client finished sending first",
+                                           len(payload), len(payload), conn_id=None)
+        wait_for_output(log_lines, untagged_summary)
     finally:
-        output = stop_proxy(proxy)
+        output = drain_proxy_output(proxy, drain, log_lines)
         echo_server.close()
 
     if payload_hex not in output:
         fail("[no-conn-ids] the payload must still be logged without connection ids", output)
     if "Incoming connection from" not in output:
         fail("[no-conn-ids] the accept line must still be logged without connection ids", output)
+    if not re.search(untagged_summary, output):
+        fail("[no-conn-ids] the close summary must still be logged without connection ids",
+             output)
     if "[#" in output:
         fail("[no-conn-ids] output must carry no `[#N]` tags with --no-connection-ids", output)
 
     print("OK [no-conn-ids] --no-connection-ids removes the tags, output otherwise intact")
+
+
+def test_no_close_summary_flag(binary):
+    """`--no-close-summary` removes the close summary and nothing else.
+
+    The absence is checked once the connection's two Drop records — logged just
+    before the summary would be, by the same task — are in the output, plus a
+    grace period; the payload and accept lines prove the relay really ran."""
+    echo_server, echo_port = start_echo_server()
+    proxy, proxy_port = start_proxy(binary, echo_port, extra_args=("--no-close-summary",))
+    drain, log_lines = start_output_drain(proxy)
+    payload = bytes([0x4B, 0x5C, 0x6D])
+    payload_hex = ":".join("%02x" % b for b in payload)
+    try:
+        if not wait_for_listener(proxy_port):
+            fail("[no-close-summary] proxy did not start listening")
+        with socket.create_connection((HOST, proxy_port), timeout=IO_TIMEOUT) as client:
+            client.settimeout(IO_TIMEOUT)
+            client_port = client.getsockname()[1]
+            client.sendall(payload)
+            if recv_exact(client, len(payload)) != payload:
+                fail("[no-close-summary] echo mismatch")
+        accept = wait_for_output(log_lines, r"\[#(\d+)\] Incoming connection from %s:%d\b"
+                                 % (re.escape(HOST), client_port))
+        if accept is not None:
+            drop_record = "[#%s] x Deallocated." % accept.group(1)
+            deadline = time.monotonic() + IO_TIMEOUT
+            while ("".join(log_lines).count(drop_record) < 2
+                   and time.monotonic() < deadline):
+                time.sleep(0.05)
+            time.sleep(0.3)  # a summary would follow the Drop records at once
+    finally:
+        output = drain_proxy_output(proxy, drain, log_lines)
+        echo_server.close()
+
+    if payload_hex not in output:
+        fail("[no-close-summary] the payload must still be logged", output)
+    if not re.search(r"\[#\d+\] Incoming connection from %s:%d\b"
+                     % (re.escape(HOST), client_port), output):
+        fail("[no-close-summary] the accept line must still be logged", output)
+    if "Closed connection from" in output:
+        fail("[no-close-summary] no close summary may be logged with --no-close-summary",
+             output)
+
+    print("OK [no-close-summary] --no-close-summary removes the summary, output otherwise intact")
 
 
 def test_level_filters_payload(binary):
@@ -544,26 +643,31 @@ def test_level_filters_payload(binary):
     def relay_at(level):
         echo_server, echo_port = start_echo_server()
         proxy, proxy_port = start_proxy(binary, echo_port, level=level)
+        drain, log_lines = start_output_drain(proxy)
         try:
             if not wait_for_listener(proxy_port):
                 fail("[level] proxy did not start listening at --level %s" % level)
             with socket.create_connection((HOST, proxy_port), timeout=IO_TIMEOUT) as client:
                 client.settimeout(IO_TIMEOUT)
+                client_port = client.getsockname()[1]
                 client.sendall(payload)
                 received = recv_exact(client, len(payload))
             if received != payload:
                 fail("[level] relay failed at --level %s: got %r" % (level, received))
-            time.sleep(0.3)
+            # The close summary is the connection's last line, at either level.
+            summary = summary_pattern(client_port, "client finished sending first",
+                                      len(payload), len(payload))
+            wait_for_output(log_lines, summary)
         finally:
-            output = stop_proxy(proxy)
+            output = drain_proxy_output(proxy, drain, log_lines)
             echo_server.close()
-        return output
+        return output, summary
 
-    debug_output = relay_at("debug")
+    debug_output, _ = relay_at("debug")
     if payload_hex not in debug_output:
         fail("[level] the payload must be printed at --level debug", debug_output)
 
-    info_output = relay_at("info")
+    info_output, info_summary = relay_at("info")
     if payload_hex in info_output:
         fail("[level] the payload must be hidden at --level info", info_output)
     # The relay still ran, so the lifecycle lines prove the absence above is real.
@@ -573,6 +677,10 @@ def test_level_filters_payload(binary):
     # `--level info`, where the tagged payload lines are suppressed.
     if not re.search(r"\[#\d+\] Incoming connection from", info_output):
         fail("[level] the tagged accept line must remain visible at --level info", info_output)
+    # So is the close summary: at `--level info` it is what says how, and how
+    # much, a connection relayed.
+    if not re.search(info_summary, info_output):
+        fail("[level] the close summary must remain visible at --level info", info_output)
 
     print("OK [level] payload shown at debug, hidden at info (lifecycle lines kept)")
 
@@ -594,12 +702,15 @@ def test_unreachable_remote(binary):
         stderr=subprocess.STDOUT,
         text=True,
     )
+    drain, log_lines = start_output_drain(proxy)
+    client_port = None
     try:
         if not wait_for_listener(proxy_port):
             fail("[unreachable-remote] proxy did not start listening")
 
         with socket.create_connection((HOST, proxy_port), timeout=IO_TIMEOUT) as client:
             client.settimeout(IO_TIMEOUT)
+            client_port = client.getsockname()[1]
             try:
                 leftover = client.recv(16)  # expect a clean close (b"")
             except ConnectionResetError:
@@ -611,13 +722,15 @@ def test_unreachable_remote(binary):
         if proxy.poll() is not None:
             fail("[unreachable-remote] proxy exited after a failed remote connect (rc=%s)"
                  % proxy.returncode)
+        wait_for_output(log_lines, summary_pattern(client_port, "connect to destination failed",
+                                                   0, 0))
     finally:
-        output = stop_proxy(proxy)
+        output = drain_proxy_output(proxy, drain, log_lines)
 
     if "panic" in output.lower():
         fail("[unreachable-remote] proxy panicked instead of handling the error gracefully",
              output)
-    assert_tagged_connect_failure(output, "unreachable-remote")
+    assert_tagged_connect_failure(output, "unreachable-remote", client_port)
     print("OK [unreachable-remote] failure logged, client closed, proxy still serving")
 
 
@@ -653,29 +766,31 @@ def test_bind_failure(binary):
 
 
 def test_ctrl_c(binary):
-    """Ctrl-C (SIGINT) triggers a clean shutdown with a zero exit code."""
+    """Ctrl-C (SIGINT) triggers a clean shutdown with a zero exit code, and every
+    connection still open is summarized as interrupted on the way out.
+
+    One client is held open mid-conversation when the signal arrives. Once the
+    process has exited its output is complete, so the check that every accepted
+    connection (the listener-readiness probe included) has exactly one close
+    summary is deterministic."""
     if platform.system() == "Windows":
         print("SKIP [ctrl-c] SIGINT delivery is tested only on POSIX")
         return
 
     echo_server, echo_port = start_echo_server()
-    proxy_port = free_port()
-    proxy = subprocess.Popen(
-        [
-            binary,
-            "--bind-listener-addr", "%s:%d" % (HOST, proxy_port),
-            "--remote-addr", "%s:%d" % (HOST, echo_port),
-            "--level", "info",
-        ],
-        cwd=ROOT,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
+    proxy, proxy_port = start_proxy(binary, echo_port, level="info")
+    payload = bytes([0xC0, 0xFF, 0xEE, 0x5A])
     output = ""
+    held = None
     try:
         if not wait_for_listener(proxy_port):
             fail("[ctrl-c] proxy did not start listening")
+        held = socket.create_connection((HOST, proxy_port), timeout=IO_TIMEOUT)
+        held.settimeout(IO_TIMEOUT)
+        held_port = held.getsockname()[1]
+        held.sendall(payload)
+        if recv_exact(held, len(payload)) != payload:
+            fail("[ctrl-c] echo mismatch on the held connection")
         proxy.send_signal(signal.SIGINT)
         try:
             output = proxy.communicate(timeout=5)[0]
@@ -683,6 +798,8 @@ def test_ctrl_c(binary):
             proxy.kill()
             fail("[ctrl-c] proxy did not exit within 5s of SIGINT")
     finally:
+        if held is not None:
+            held.close()
         echo_server.close()
         if proxy.poll() is None:
             proxy.kill()
@@ -690,7 +807,21 @@ def test_ctrl_c(binary):
     if proxy.returncode != 0:
         fail("[ctrl-c] expected a clean exit (0) after SIGINT, got rc=%s" % proxy.returncode,
              output)
-    print("OK [ctrl-c] proxy shut down cleanly on SIGINT (rc=0)")
+
+    summary = re.search(summary_pattern(held_port, "interrupted", len(payload), len(payload)),
+                        output)
+    if summary is None:
+        fail("[ctrl-c] the held connection was not summarized as interrupted, with its "
+             "%d B each way" % len(payload), output)
+    shutdown_at = output.find("Received shutdown signal, stopping listener.")
+    if shutdown_at < 0 or summary.start() < shutdown_at:
+        fail("[ctrl-c] the interrupted summary must follow the shutdown line", output)
+    accepted = sorted(re.findall(r"\[#(\d+)\] Incoming connection from ", output))
+    closed = sorted(re.findall(r"\[#(\d+)\] Closed connection from ", output))
+    if accepted != closed:
+        fail("[ctrl-c] every accepted connection must have exactly one close summary "
+             "(accepted %s, summarized %s)" % (accepted, closed), output)
+    print("OK [ctrl-c] proxy shut down cleanly on SIGINT (rc=0), summarizing open connections")
 
 
 def test_http(binary):
@@ -941,12 +1072,15 @@ def test_unresolvable_remote(binary):
         stderr=subprocess.STDOUT,
         text=True,
     )
+    drain, log_lines = start_output_drain(proxy)
+    client_port = None
     try:
         if not wait_for_listener(proxy_port):
             fail("[unresolvable-remote] proxy did not start listening")
 
         with socket.create_connection((HOST, proxy_port), timeout=IO_TIMEOUT) as client:
             client.settimeout(IO_TIMEOUT)
+            client_port = client.getsockname()[1]
             try:
                 leftover = client.recv(16)  # expect a clean close (b"")
             except ConnectionResetError:
@@ -958,12 +1092,14 @@ def test_unresolvable_remote(binary):
         if proxy.poll() is not None:
             fail("[unresolvable-remote] proxy exited after a failed resolution (rc=%s)"
                  % proxy.returncode)
+        wait_for_output(log_lines, summary_pattern(client_port, "connect to destination failed",
+                                                   0, 0))
     finally:
-        output = stop_proxy(proxy)
+        output = drain_proxy_output(proxy, drain, log_lines)
 
     if "panic" in output.lower():
         fail("[unresolvable-remote] proxy panicked instead of handling the DNS failure", output)
-    assert_tagged_connect_failure(output, "unresolvable-remote")
+    assert_tagged_connect_failure(output, "unresolvable-remote", client_port)
     print("OK [unresolvable-remote] DNS failure logged, client closed, proxy still serving")
 
 
@@ -1102,6 +1238,12 @@ def run_peer_recipe(binary, peer, recipe):
              all_output())
     if "[#2]" in output("proxy"):
         fail("[%s] the proxy saw a second connection" % case, all_output())
+    # The connection ends with its close summary: no line of it may follow. (The
+    # ordered `expect` needles alone would let a stray line after it pass.)
+    tagged = [line for line in output("proxy").splitlines() if "[#1] " in line]
+    if not tagged or "[#1] Closed connection from %s:%s " % (HOST, client_port) not in tagged[-1]:
+        fail("[%s] the proxy's last [#1] line is not the connection's close summary" % case,
+             all_output())
 
     print("OK [%s] %s" % (case, recipe["about"]))
 
@@ -1174,6 +1316,7 @@ def main():
     test_direction_markers_and_no_double_logging(binary)
     test_connection_id_tags(binary)
     test_no_connection_ids_flag(binary)
+    test_no_close_summary_flag(binary)
     test_level_filters_payload(binary)
     test_hostname_remote(binary)
     test_http(binary)
