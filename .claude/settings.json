@@ -6,6 +6,8 @@
       "Write",
 
       "WebSearch",
+      "WebFetch(domain:docs.rs)",
+      "WebFetch(domain:crates.io)",
       "WebFetch(domain:raw.githubusercontent.com)",
 
       "Bash(git status:*)",
