@@ -1,8 +1,8 @@
 {
-    "recommendations": [
-        "rust-lang.rust-analyzer",
-        "yzhang.markdown-all-in-one",
-        "esbenp.prettier-vscode",
-        "github.vscode-github-actions"
-    ]
+  "recommendations": [
+    "rust-lang.rust-analyzer",
+    "yzhang.markdown-all-in-one",
+    "esbenp.prettier-vscode",
+    "github.vscode-github-actions"
+  ]
 }
