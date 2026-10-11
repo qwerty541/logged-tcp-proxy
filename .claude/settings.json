@@ -58,10 +58,7 @@
       "Bash(diff:*)",
       "Bash(cmp:*)"
     ],
-    "deny": [
-      "Bash(find * -delete)",
-      "Bash(find * -exec rm )"
-    ]
+    "deny": ["Bash(find * -delete)", "Bash(find * -exec rm )"]
   },
   "respectGitignore": true,
   "cleanupPeriodDays": 90
