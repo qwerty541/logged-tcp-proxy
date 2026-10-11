@@ -6,6 +6,8 @@
       "Write",
 
       "WebSearch",
+      "WebFetch(domain:docs.rs)",
+      "WebFetch(domain:crates.io)",
       "WebFetch(domain:raw.githubusercontent.com)",
 
       "Bash(git status:*)",
@@ -58,10 +60,7 @@
       "Bash(diff:*)",
       "Bash(cmp:*)"
     ],
-    "deny": [
-      "Bash(find * -delete)",
-      "Bash(find * -exec rm )"
-    ]
+    "deny": ["Bash(find * -delete)", "Bash(find * -exec rm )"]
   },
   "respectGitignore": true,
   "cleanupPeriodDays": 90
