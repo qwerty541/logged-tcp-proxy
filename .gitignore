@@ -1,7 +1,8 @@
 /target/
 
-# Git worktrees created by Claude Code sessions
+# Claude Code session files
 /.claude/worktrees/
+/.claude/settings.local.json
 
 # Python bytecode (e.g. from importing scripts/peer.py)
 __pycache__/
