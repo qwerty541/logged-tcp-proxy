@@ -39,8 +39,9 @@ All source lives in `src/`:
   `shutdown_background()`, never a `process::exit` on the success path): its drop
   cancels every connection still open, and dropping each connection's task is what
   logs its `(interrupted)` close summary — the drop also waits for that to finish.
-  Only the in-crate runtime-drop test and the black-box Ctrl-C case would notice a
-  change here.
+  Only the black-box Ctrl-C case (POSIX only) would notice a change here: the in-crate
+  runtime-drop test builds and drops a runtime of its own, so it pins the mechanism,
+  not `main`.
 - [`src/args.rs`](src/args.rs) — the `clap`-derived `Arguments` struct (all
   fields `pub`) plus three CLI value enums (`LoggingLevel`,
   `PayloadFormattingKind`, `TimestampPrecision`). Each enum derives clap's
@@ -184,25 +185,30 @@ All source lives in `src/`:
 - [`src/conn/stats.rs`](src/conn/stats.rs) — the per-connection close summary.
   `ConnStats` (`pub(super)`) is one accepted connection's record:
   `ConnStats::accepted` mints its `ConnLog` and logs the accept line, and its `Drop`
-  logs the close summary (unless `--no-close-summary`), so every accept line is
-  matched by exactly one summary by construction. Never create one for anything but
-  an accepted connection. In between it collects what the summary reports: per
-  direction a byte counter and a "finished" flag (`AtomicU64`/`AtomicBool`,
-  `Relaxed` on the same single-task premise as `ActivityClock` — the two files point
-  at each other, keep them in sync), the first relay ending (`first_end`, a
-  `OnceLock<Ending>`) and an ending the handler caused itself (`teardown`, a
-  `OnceLock<Teardown>`). Each relay holds a `Copy` `RelayStats` handle (`received`,
-  `finished`). The vocabulary is plain `pub(crate)` data — `Peer`, `Direction`,
+  logs the close summary, so — unless `--no-close-summary` turned the summary off —
+  every accept line is matched by exactly one summary by construction (a killed
+  process, e.g. SIGTERM, runs no destructors and prints none). Never create one for
+  anything but an accepted connection. In between it collects what the summary
+  reports: per direction a byte counter (`AtomicU64`, `Relaxed` on the same
+  single-task premise as `ActivityClock` — the two files point at each other, keep
+  them in sync) and how that direction's relay ended (`ending`, a `OnceLock<Ending>`),
+  which direction stopped first (`first_to_stop`, a `OnceLock<Direction>`), and an
+  ending the handler caused itself (`teardown`, a `OnceLock<Teardown>`). Each relay
+  holds a `Copy` `RelayStats` handle (`received`, `finished`). The vocabulary is
+  plain `pub(crate)` data — `Peer`, `Direction`,
   `RelayEnd`, `Ending`, `CloseReason`, `Summary` — which is why the module is
   `pub(crate) mod stats` (on the `logging` precedent): `tests::close_summary`
   renders summaries and checks the attribution rule without sockets.
   `Direction::ending` is that rule — end-of-stream and read errors are charged to the
   direction's sender, write errors to its receiver, so both operations on one socket
   name the same side. `ConnStats::close_reason` picks the reason: a recorded
-  `Teardown` wins; else, if both directions finished, the first ending; else the
-  task was dropped mid-relay, `Interrupted`. An overriding reason keeps an earlier
-  ending as its `after` (`idle timeout after client finished sending`), so a side
-  that failed first is never hidden.
+  `Teardown` wins; else, if both directions finished, the first ending — unless that
+  was a clean finish and the second direction then failed, in which case the error
+  is reported with the finish as its `after`; else the task was dropped mid-relay,
+  `Interrupted`. A reason that overrides an earlier ending keeps it as its `after`
+  (`idle timeout after client finished sending`, `server-side error: connection reset
+  after client finished sending`), so a side that failed, or one that finished
+  first, is never hidden.
 - [`src/conn/idle.rs`](src/conn/idle.rs) — the whole-connection idle timeout
   mechanism (private `mod idle`, nothing here is needed crate-wide): `ActivityClock`,
   a lock-free clock both relay directions bump on activity, plus `wait_until_idle`, a
@@ -279,10 +285,13 @@ All source lives in `src/`:
    millisecond resolution whatever `--precision` says. The reasons are `client
    finished sending first` / `server finished sending first`, `client-side error:
    <io::ErrorKind>` / `server-side error: <io::ErrorKind>`, `idle timeout`, `connect to
-   destination failed` and `interrupted`, the overriding two with an optional
-   `after <first ending>`. Because `relay()` forwards an RST to the other peer as an
-   ordinary close and the `!` error records read the same for either side, the
-   summary is the only line that names the side that failed. "First" is the order
+   destination failed` and `interrupted`. The idle timeout and `interrupted` take an
+   optional `after <first ending>`, and so does an error that follows a clean finish
+   in the other direction (`server-side error: connection reset after client finished
+   sending`) — an error is never hidden behind a clean finish. Because `relay()`
+   forwards an RST to the other peer as an ordinary close and the `!` error records
+   read the same for either side, the summary is the only line that names the side
+   that failed. "First" is the order
    the proxy observed; ties within one poll are arbitrary (a tie at the relays' very
    first poll names the client, because `tokio::join!` polls its first branch first).
 
@@ -478,7 +487,10 @@ Conventions that keep the tree tidy:
   `log_capture::wait_for_line` (a bounded poll), never read once. Spell out the whole
   expected line up to its variable tail (the duration) in the awaited prefix: a
   closed client's port can be reused by a later test's client, and a loose prefix
-  could then match that test's stale line.
+  could then match that test's stale line. The one exception is an error's kind
+  (`connection reset`): which `io::ErrorKind` an OS reports can differ between
+  platforms, so a test that expects an error waits for the line up to the side of
+  the error (`(server-side error: `) and then checks the rest of it.
 
 They are fully self-contained and portable:
 
@@ -599,10 +611,12 @@ Invariants to keep when editing it:
     client), never "sent"/"received".
   - Payloads render exactly like the proxy's `-f`/`-s`. The black-box test checks
     every byte value against the renderings it pins on the binary.
-  - The peers' closing line, `x closed: sent N B, received M B`, reconciles with the
-    proxy's close summary (`client -> server` is the client's `sent` and the
-    server's `received`); the `directions` and `server-close` recipes pin both
-    sides, so a change to either count must keep them agreeing.
+  - After a clean close, the peers' closing line, `x closed: sent N B, received M B`,
+    reconciles with the proxy's close summary (`client -> server` is the client's
+    `sent` and the server's `received`); the `directions` and `server-close` recipes
+    pin both sides, so a change to either count must keep them agreeing. (After a
+    failure they can differ: with the destination down, the client's `sent 6 B`
+    never reaches the proxy's `client -> server 0 B`.)
 - **No probe connections.** The client retries only a *refused* connect, so the
   first client is the proxy's `[#1]`.
 - **No accidental RSTs.** The default ending sends FIN and waits for the other

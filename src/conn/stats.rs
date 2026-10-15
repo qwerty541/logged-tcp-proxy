@@ -17,7 +17,6 @@ use std::fmt;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::OnceLock;
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -51,6 +50,14 @@ pub(crate) enum Direction {
 }
 
 impl Direction {
+    /// The opposite direction.
+    fn other(self) -> Direction {
+        match self {
+            Direction::ClientToServer => Direction::ServerToClient,
+            Direction::ServerToClient => Direction::ClientToServer,
+        }
+    }
+
     /// Charge the way this direction stopped to the side whose socket it happened on.
     ///
     /// End-of-stream and a failed read belong to the direction's *sender*, a failed
@@ -103,8 +110,13 @@ impl fmt::Display for Ending {
 /// Why a connection closed: the parenthesized part of its summary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CloseReason {
-    /// Both directions stopped on their own; this is how the first one did.
-    Ended(Ending),
+    /// Both directions stopped on their own, and `ending` is how the first one did —
+    /// unless the first finished cleanly and the second then failed: the error is what
+    /// went wrong, so it is the `ending`, with the clean finish before it as `after`.
+    Ended {
+        ending: Ending,
+        after: Option<Ending>,
+    },
     /// `--timeout` closed the connection. `after` is how one direction had already
     /// stopped, if it had (e.g. a half-closed connection that then went quiet).
     IdleTimeout { after: Option<Ending> },
@@ -119,10 +131,18 @@ pub(crate) enum CloseReason {
 impl fmt::Display for CloseReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            CloseReason::Ended(ending @ Ending::FinishedSending(_)) => {
-                write!(f, "{ending} first")
-            }
-            CloseReason::Ended(ending) => write!(f, "{ending}"),
+            CloseReason::Ended {
+                ending,
+                after: Some(after),
+            } => write!(f, "{ending} after {after}"),
+            CloseReason::Ended {
+                ending: ending @ Ending::FinishedSending(_),
+                after: None,
+            } => write!(f, "{ending} first"),
+            CloseReason::Ended {
+                ending,
+                after: None,
+            } => write!(f, "{ending}"),
             CloseReason::IdleTimeout { after: None } => f.write_str("idle timeout"),
             CloseReason::IdleTimeout {
                 after: Some(ending),
@@ -185,8 +205,8 @@ impl fmt::Display for Summary {
 struct DirectionCounters {
     /// Bytes read from this direction's sender.
     bytes: AtomicU64,
-    /// Whether this direction's relay has stopped.
-    finished: AtomicBool,
+    /// How this direction's relay stopped; unset while it still runs.
+    ending: OnceLock<Ending>,
 }
 
 /// The record of one accepted connection: it logs the connection's accept line when
@@ -195,9 +215,10 @@ struct DirectionCounters {
 ///
 /// Exactly one is created per accepted connection, by [`accepted`](Self::accepted)
 /// in the accept loop. The accept line and the summary come from the same value, so
-/// every `Incoming connection` line is matched by exactly one `Closed connection`
-/// line, on every way a connection can end — including Ctrl-C, but not a killed
-/// process (e.g. SIGTERM), which runs no destructors at all.
+/// — unless `--no-close-summary` turned the summary off — every `Incoming
+/// connection` line is matched by exactly one `Closed connection` line, on every way
+/// a connection can end: including Ctrl-C, but not a killed process (e.g. SIGTERM),
+/// which runs no destructors at all.
 ///
 /// It owns the connection's [`ConnLog`], which the handler borrows through
 /// [`conn_log`](Self::conn_log): the summary is one of the connection's lines, so it
@@ -208,22 +229,24 @@ pub(super) struct ConnStats {
     /// `std`'s clock rather than tokio's: `Drop` may run while the runtime is being
     /// torn down.
     accepted: Instant,
-    /// `false` with `--no-close-summary`. Everything is still counted (two relaxed
-    /// atomic operations per chunk), only the line is not logged.
+    /// `false` with `--no-close-summary`. Everything is still counted (one relaxed
+    /// atomic add per chunk), only the line is not logged.
     summary_enabled: bool,
-    // `Relaxed`, on the premise documented on `super::idle::ActivityClock`: the relays
-    // that update these are `join!`/`select!` sub-futures of the connection's one
-    // task, never spawned. The values are read only in `Drop`, either in that same
-    // task once the handler has returned, or when the runtime drops the task at
-    // shutdown, possibly on another worker thread — and the runtime's own task-state
-    // transitions (acquire/release) order the last poll's updates before that drop.
-    // Atomics rather than `Cell` only because a `&ConnStats` is held across `.await`s
-    // and the task must stay `Send` for `tokio::spawn`.
+    // The byte counters are `Relaxed`, on the premise documented on
+    // `super::idle::ActivityClock`: the relays that update them are `join!`/`select!`
+    // sub-futures of the connection's one task, never spawned. They are read only in
+    // `Drop`, either in that same task once the handler has returned, or when the
+    // runtime drops the task at shutdown, possibly on another worker thread — and the
+    // runtime's own task-state transitions (acquire/release) order the last poll's
+    // updates before that drop. (The endings are `OnceLock`s, which synchronize
+    // themselves.) Atomics and `OnceLock`s rather than `Cell`s only because a
+    // `&ConnStats` is held across `.await`s and the task must stay `Send` for
+    // `tokio::spawn`.
     client_to_server: DirectionCounters,
     server_to_client: DirectionCounters,
-    /// How the first direction to stop ended. Set once, by whichever stops first.
-    first_end: OnceLock<Ending>,
-    /// An ending the handler caused itself; it wins over `first_end`.
+    /// The direction that stopped first. Set once, by whichever stops first.
+    first_to_stop: OnceLock<Direction>,
+    /// An ending the handler caused itself; it wins over the relays' own endings.
     teardown: OnceLock<Teardown>,
 }
 
@@ -241,7 +264,7 @@ impl ConnStats {
             summary_enabled: arguments.close_summary,
             client_to_server: DirectionCounters::default(),
             server_to_client: DirectionCounters::default(),
-            first_end: OnceLock::new(),
+            first_to_stop: OnceLock::new(),
             teardown: OnceLock::new(),
         }
     }
@@ -277,28 +300,37 @@ impl ConnStats {
         }
     }
 
-    /// Why the connection closed. A teardown the handler recorded wins. Otherwise,
-    /// if both directions stopped, it is how the first one did. Otherwise the task
-    /// was dropped with a direction still running, which only the runtime shutting
-    /// down at Ctrl-C does (to a task mid-relay, or to one that never ran at all).
-    /// An overriding reason keeps a direction's earlier ending as its `after`, so a
-    /// side that failed or finished first is never hidden behind it.
+    /// Why the connection closed. A teardown the handler recorded wins. Otherwise, if
+    /// both directions stopped, it is how the first one did — or, when that was a
+    /// clean finish and the second direction then failed, the second one's error,
+    /// after that finish. Otherwise the task was dropped with a direction still
+    /// running, which only the runtime shutting down at Ctrl-C does (to a task
+    /// mid-relay, or to one that never ran at all; a panicking connection task would
+    /// read the same). A reason that overrides an earlier ending keeps it as its
+    /// `after`, so a side that failed or finished first is never hidden behind it.
     fn close_reason(&self) -> CloseReason {
-        let first_end = self.first_end.get().copied();
+        let ending = |direction| self.counters(direction).ending.get().copied();
+        let (first, second) = match self.first_to_stop.get() {
+            Some(&first) => (ending(first), ending(first.other())),
+            None => (None, None),
+        };
         match self.teardown.get() {
             Some(Teardown::ConnectFailed) => CloseReason::ConnectFailed,
-            Some(Teardown::IdleTimeout) => CloseReason::IdleTimeout { after: first_end },
-            None => match first_end {
-                Some(ending) if self.both_finished() => CloseReason::Ended(ending),
-                after => CloseReason::Interrupted { after },
+            Some(Teardown::IdleTimeout) => CloseReason::IdleTimeout { after: first },
+            None => match (first, second) {
+                (Some(finish @ Ending::FinishedSending(_)), Some(error @ Ending::Error(..))) => {
+                    CloseReason::Ended {
+                        ending: error,
+                        after: Some(finish),
+                    }
+                }
+                (Some(ending), Some(_)) => CloseReason::Ended {
+                    ending,
+                    after: None,
+                },
+                (after, _) => CloseReason::Interrupted { after },
             },
         }
-    }
-
-    fn both_finished(&self) -> bool {
-        [Direction::ClientToServer, Direction::ServerToClient]
-            .into_iter()
-            .all(|direction| self.counters(direction).finished.load(Ordering::Relaxed))
     }
 
     fn summary(&self) -> Summary {
@@ -337,13 +369,15 @@ impl RelayStats<'_> {
             .fetch_add(bytes as u64, Ordering::Relaxed);
     }
 
-    /// Record how this direction stopped. The first direction to stop is the one the
-    /// summary reports.
+    /// Record how this direction stopped, and whether it was the first to. The
+    /// ending is stored before the claim, so the first direction's ending is always
+    /// there once `first_to_stop` names it.
     pub(super) fn finished(self, end: RelayEnd) {
-        let _ = self.stats.first_end.set(self.direction.ending(end));
-        self.stats
+        let _ = self
+            .stats
             .counters(self.direction)
-            .finished
-            .store(true, Ordering::Relaxed);
+            .ending
+            .set(self.direction.ending(end));
+        let _ = self.stats.first_to_stop.set(self.direction);
     }
 }

@@ -7,7 +7,10 @@
 //! is that proxy's `[#1]`, and wait (bounded) for its summary in the shared capture.
 //! Each wait spells out the whole expected line up to the duration, keyed by the
 //! client's own ephemeral address: a parallel test's line cannot satisfy it, and
-//! neither can a stale line from an earlier test whose client port was reused.
+//! neither can a stale line from an earlier test whose client port was reused. The
+//! exceptions are the two server-reset tests: which `io::ErrorKind` an OS reports a
+//! reset as can differ between platforms, so they wait for the line up to the side
+//! of the error and then check the rest of it.
 
 use super::helpers::IO_TIMEOUT;
 use super::helpers::LOOPBACK;
@@ -110,6 +113,13 @@ fn summary_renders_every_close_reason() {
     use io::ErrorKind::BrokenPipe;
     use io::ErrorKind::ConnectionReset;
 
+    let client_finished = Ending::FinishedSending(Peer::Client);
+    let server_finished = Ending::FinishedSending(Peer::Server);
+    let client_reset = Ending::Error(Peer::Client, ConnectionReset);
+    let ended = |ending| CloseReason::Ended {
+        ending,
+        after: None,
+    };
     let render = |reason, elapsed| {
         Summary {
             client_addr: "127.0.0.1:50512".parse().expect("a valid address"),
@@ -121,41 +131,36 @@ fn summary_renders_every_close_reason() {
         .to_string()
     };
     assert_eq!(
-        render(
-            CloseReason::Ended(Ending::FinishedSending(Peer::Client)),
-            Duration::from_millis(12)
-        ),
+        render(ended(client_finished), Duration::from_millis(12)),
         "Closed connection from 127.0.0.1:50512 (client finished sending first): \
          client -> server 6 B, server -> client 10 B in 0.012s"
     );
 
     for (reason, expected) in [
+        (ended(client_finished), "client finished sending first"),
+        (ended(server_finished), "server finished sending first"),
+        (ended(client_reset), "client-side error: connection reset"),
         (
-            CloseReason::Ended(Ending::FinishedSending(Peer::Client)),
-            "client finished sending first",
-        ),
-        (
-            CloseReason::Ended(Ending::FinishedSending(Peer::Server)),
-            "server finished sending first",
-        ),
-        (
-            CloseReason::Ended(Ending::Error(Peer::Client, ConnectionReset)),
-            "client-side error: connection reset",
-        ),
-        (
-            CloseReason::Ended(Ending::Error(Peer::Server, BrokenPipe)),
+            ended(Ending::Error(Peer::Server, BrokenPipe)),
             "server-side error: broken pipe",
+        ),
+        (
+            CloseReason::Ended {
+                ending: Ending::Error(Peer::Server, ConnectionReset),
+                after: Some(client_finished),
+            },
+            "server-side error: connection reset after client finished sending",
         ),
         (CloseReason::IdleTimeout { after: None }, "idle timeout"),
         (
             CloseReason::IdleTimeout {
-                after: Some(Ending::FinishedSending(Peer::Client)),
+                after: Some(client_finished),
             },
             "idle timeout after client finished sending",
         ),
         (
             CloseReason::IdleTimeout {
-                after: Some(Ending::Error(Peer::Client, ConnectionReset)),
+                after: Some(client_reset),
             },
             "idle timeout after client-side error: connection reset",
         ),
@@ -163,7 +168,7 @@ fn summary_renders_every_close_reason() {
         (CloseReason::Interrupted { after: None }, "interrupted"),
         (
             CloseReason::Interrupted {
-                after: Some(Ending::FinishedSending(Peer::Server)),
+                after: Some(server_finished),
             },
             "interrupted after server finished sending",
         ),
@@ -327,8 +332,8 @@ async fn server_reset_is_summarized_as_a_server_side_error() {
     );
     drop(client);
 
-    // Only the side is pinned: the error kind's text is the OS's, through `std`
-    // (`connection reset` on Linux), and may differ elsewhere.
+    // Only the side is pinned: which `io::ErrorKind` the OS reports the reset as
+    // (`connection reset` on Linux) can differ on other platforms.
     let line = wait_for_line(&format!(
         "[#1] Closed connection from {client_addr} (server-side error: "
     ))
@@ -336,6 +341,63 @@ async fn server_reset_is_summarized_as_a_server_side_error() {
     assert!(
         line.contains("): client -> server 1 B, server -> client 0 B in "),
         "unexpected counts in {line:?}"
+    );
+    // The error came first, so there is no earlier ending to report alongside it.
+    assert!(!line.contains(" after "), "unexpected reason in {line:?}");
+    assert_ends_in_duration(&line);
+}
+
+/// An error that follows a clean finish in the other direction is what the summary
+/// reports, with the finish kept as its `after`: here the client finishes sending (a
+/// half-close) and the server, instead of answering, resets the connection. The
+/// client sees only an ordinary close and the `!` error line does not say whose
+/// socket failed, so this is the only line that names the server.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn server_reset_after_the_client_finished_is_summarized() {
+    install_capturing_logger();
+
+    let remote_addr = spawn_remote(|mut stream| async move {
+        // The request's end is the client's finish, forwarded by the proxy.
+        if stream.read_to_end(&mut Vec::new()).await.is_ok() {
+            stream
+                .set_zero_linger()
+                .expect("failed to arm the remote's reset");
+        }
+    })
+    .await;
+    let proxy_addr = spawn_proxy(remote_addr).await;
+
+    let mut client = connect(proxy_addr).await;
+    let client_addr = client.local_addr().expect("client local_addr");
+    timeout(IO_TIMEOUT, client.write_all(b"REQ"))
+        .await
+        .expect("write timed out")
+        .expect("failed to write");
+    timeout(IO_TIMEOUT, client.shutdown())
+        .await
+        .expect("shutdown timed out")
+        .expect("failed to shut the client's sending side down");
+    let mut buffer = [0u8; 8];
+    let read = timeout(IO_TIMEOUT, client.read(&mut buffer))
+        .await
+        .expect("read timed out: the proxy did not forward the remote's reset");
+    assert_eq!(
+        read.expect("the client must see an ordinary close, not a reset"),
+        0,
+        "the proxy forwards the server's reset to the client as an ordinary close"
+    );
+    drop(client);
+
+    // As above, only the side of the error is pinned, not its kind.
+    let line = wait_for_line(&format!(
+        "[#1] Closed connection from {client_addr} (server-side error: "
+    ))
+    .await;
+    assert!(
+        line.contains(
+            " after client finished sending): client -> server 3 B, server -> client 0 B in "
+        ),
+        "unexpected reason or counts in {line:?}"
     );
     assert_ends_in_duration(&line);
 }

@@ -346,6 +346,7 @@ pub struct Arguments {
     // the *field* name, yielding `-c`, which reads as *enabling* the tags.
     #[arg(short = 'n', long = "no-connection-ids", action = clap::ArgAction::SetFalse)]
     pub connection_ids: bool,
+
     /// Disable the summary line logged when each connection closes (how it ended,
     /// the bytes relayed in each direction and how long it was open).
     //
