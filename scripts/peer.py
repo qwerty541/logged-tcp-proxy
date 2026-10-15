@@ -928,8 +928,8 @@ RECIPES = [
         "ci": True,
         "expect": {
             "client": ["< 68:65:6c:6c:6f:0a", "> 72:65:3a:20", "x reset (RST sent)"],
-            # The error kind after the side is the OS's text, so only the side is
-            # pinned: `connection reset` on Linux may read differently elsewhere.
+            # Only the side of the error is pinned: which error kind the OS reports a
+            # reset as (`connection reset` on Linux) can differ elsewhere.
             "proxy": ["[#1] < 68:65:6c:6c:6f:0a", "[#1] ! Error during async read",
                       "[#1] Closed connection from 127.0.0.1:", "(client-side error: ",
                       "): client -> server 6 B, server -> client 10 B in "],
