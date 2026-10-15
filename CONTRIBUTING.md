@@ -119,10 +119,12 @@ side:
   proxy's outgoing side.
 - The peers also show what the proxy cannot: `-` FIN sent, `=` EOF received, `x`
   socket closed (and how), `!` an error (of the socket, or a refused command).
-- Each side's closing line, `x closed: sent N B, received M B`, reconciles with the
-  proxy's close summary, `[#N] Closed connection from ... (<reason>): client -> server
-  N B, server -> client M B in S.mmms`: its `client -> server` count is what the
-  client sent and the server received, and `server -> client` the other way round.
+- After a clean close, each side's closing line, `x closed: sent N B, received M B`,
+  reconciles with the proxy's close summary, `[#N] Closed connection from ...
+  (<reason>): client -> server N B, server -> client M B in S.mmms`: its
+  `client -> server` count is what the client sent and the server received, and
+  `server -> client` the other way round. After a failure they can differ: with the
+  destination down, the proxy never reads what the client sent.
 
 Besides typed input, both peers run scripted **steps**:
 - sending: text with escapes (`hello\n`), raw bytes (`x:00:01:6f:ff`), random bytes
