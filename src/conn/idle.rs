@@ -28,7 +28,8 @@ pub(super) struct ActivityClock {
     // It is also a self-contained timestamp that guards no other memory, so there is
     // nothing for Acquire/Release to publish; single-location coherence is the whole
     // requirement, and the watchdog re-reads after sleeping whole seconds, far longer
-    // than any store can take to become visible.
+    // than any store can take to become visible. (The byte counters on
+    // `super::stats::ConnStats` rest on the same composition; keep the two in sync.)
     last_active_millis: AtomicU64,
 }
 
