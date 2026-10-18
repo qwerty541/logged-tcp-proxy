@@ -210,12 +210,14 @@ def summary_pattern(port, reason, client_to_server, server_to_client, conn_id=r"
     """A regex for the close summary of the client on local `port`, with exactly
     this reason and these byte counts, ending in its `<secs>.<millis>s` duration.
     Tagged with `conn_id` (any id by default), or untagged when it is None (the
-    `--no-connection-ids` form)."""
+    `--no-connection-ids` form). From 1 KiB up a count is followed by its readable
+    size (`1143 B (1.1 KiB)`), which the in-crate tests pin; here it is optional."""
     tag = "" if conn_id is None else r"\[#%s\] " % conn_id
-    return (r"%sClosed connection from %s:%d \(%s\): client -> server %d B, "
-            r"server -> client %d B in \d+\.\d{3}s"
-            % (tag, re.escape(HOST), port, re.escape(reason), client_to_server,
-               server_to_client))
+    readable = r"(?: \(\d+\.\d [KMGTPE]iB\))?"
+    return (r"%sClosed connection from %s:%d \(%s\): client -> server %d B%s, "
+            r"server -> client %d B%s in \d+\.\d{3}s"
+            % (tag, re.escape(HOST), port, re.escape(reason), client_to_server, readable,
+               server_to_client, readable))
 
 
 def assert_tagged_connect_failure(output, case, client_port):
