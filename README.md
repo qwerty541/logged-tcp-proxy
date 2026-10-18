@@ -215,10 +215,11 @@ How to read this output:
   the proxy's "ready" signal), each accepted connection (`Incoming connection from ...`)
   and its close summary (`Closed connection from ...`, see below).
 - `[#N]` is the per-connection id, assigned in accept order starting at 1: every line
-  belonging to that connection — the `Incoming connection` line, its payload lines and
-  its close summary — carries the same id. When several clients are connected at once,
-  their lines interleave and the id is what tells them apart. Listener-level lines (the
-  bind line, accept errors) carry no id. Disable the tags with `--no-connection-ids`.
+  belonging to that connection — the `Incoming connection` line, its payload lines,
+  its closing lines and its close summary — carries the same id. When several clients
+  are connected at once, their lines interleave and the id is what tells them apart.
+  Listener-level lines (the bind line, accept errors) carry no id. Disable the tags
+  with `--no-connection-ids`.
 - `DEBUG` lines are the relayed payload, shown here in the default lowercase-hex
   format with `:` separators (change with `--formatting` and `--separator`), and
   one `-` line for each direction as it closes, saying which way and why in the

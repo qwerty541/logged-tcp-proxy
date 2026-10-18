@@ -479,10 +479,13 @@ The suite is grouped into submodules by behavior ([`relay`](src/tests/relay.rs),
 lifecycle lines and the `--no-connection-ids` opt-out; the payload lines log at
 `debug`, which the shared capture deliberately filters out, so their tags are
 pinned by the black-box script instead —
-[`close_summary`](src/tests/close_summary.rs) — the close summary: its rendering and
-attribution rule as plain data, then one real connection per way a connection can
-end, the counts across many chunks, the runtime-drop (`interrupted`) path on every
-OS, and the `--no-close-summary` opt-out —
+[`close_summary`](src/tests/close_summary.rs) — the close summary and the
+per-direction closing lines: their rendering (every reason, the byte counts'
+readable sizes, each closing line) and the attribution rule as plain data, then one
+real connection per way a connection can end, the counts across many chunks, the
+runtime-drop (`interrupted`) path on every OS, and the `--no-close-summary` opt-out;
+the closing lines log at `debug`, below the capture, so on a real connection they
+are pinned by the black-box script —
 and [`formatting`](src/tests/formatting.rs) — the only module with no I/O at all: it
 pins what each `--formatting` mode renders and where `--separator` is placed),
 plus two scaffolding-only modules:

@@ -6,8 +6,9 @@
 //!
 //! - [`logging`] — the `[#N] ` console tag and the `ConnLog` facade every
 //!   per-connection line is logged through.
-//! - [`stats`] — the `ConnStats` record behind each connection's accept line and
-//!   close summary, and the byte counters it keeps.
+//! - [`stats`] — the `ConnStats` record behind each connection's accept line, its
+//!   per-direction closing lines and its close summary, and the byte counters it
+//!   keeps.
 //! - [`idle`] — the activity clock and watchdog behind `--timeout`.
 
 mod idle;
