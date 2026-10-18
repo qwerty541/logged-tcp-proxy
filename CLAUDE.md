@@ -202,7 +202,7 @@ All source lives in `src/`:
   sending)`) — the line that replaced logged-stream's shutdown and drop records (see
   [Logging / de-duplication](#logging--de-duplication-detail-intentional)). The
   vocabulary is plain `pub(crate)` data — `Peer`, `Direction`, `RelayEnd`, `Ending`,
-  `CloseReason`, `Summary`, `DirectionClosed` — which is why the module is
+  `CloseReason`, `Summary`, `ByteCount`, `DirectionClosed` — which is why the module is
   `pub(crate) mod stats` (on the `logging` precedent): `tests::close_summary`
   renders both lines and checks the attribution rule without sockets.
   `Direction::ending` is that rule — end-of-stream and read errors are charged to the
@@ -291,8 +291,13 @@ All source lives in `src/`:
    closing lines of the directions that finished. The counts are the bytes read from each side
    (`client -> server` equals the total of the `<` lines exactly; `server -> client`
    the `>` lines, plus at most one 2 KiB chunk read but never delivered when a write
-   to the client failed or was cut short); the duration runs from the accept, at
-   millisecond resolution whatever `--precision` says. The reasons are `client
+   to the client failed or was cut short). Each is always printed exactly, and from
+   1 KiB up followed by a readable size — one decimal, rounded half up, in the
+   largest binary unit reached (`1143 B (1.1 KiB)`, `134217728 B (128.0 MiB)`),
+   rendered by `stats::ByteCount` in integer arithmetic; the exact number stays
+   first so it can still be compared with frames and the peers' counts. The
+   duration runs from the accept, at millisecond resolution whatever `--precision`
+   says. The reasons are `client
    finished sending first` / `server finished sending first`, `client-side error:
    <io::ErrorKind>` / `server-side error: <io::ErrorKind>`, `idle timeout`, `connect to
    destination failed` and `interrupted`. The idle timeout and `interrupted` take an
