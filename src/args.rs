@@ -353,8 +353,8 @@ pub struct Arguments {
     // `short = 'x'` is spelled out: a bare `short` would derive `-c` from the field
     // name, which reads as *enabling* the summary (and is kept free for a future
     // `--connection-ids`), and `-n` ("no") is taken by `--no-connection-ids`. `x` is
-    // the closing marker in this tool's output (`x Deallocated.`, and peer.py's own
-    // `x closed: ...` summary).
+    // the closing marker of peer.py's `x closed: sent N B, received M B` line, the
+    // peers' own counterpart of this summary.
     #[arg(short = 'x', long = "no-close-summary", action = clap::ArgAction::SetFalse)]
     pub close_summary: bool,
 }

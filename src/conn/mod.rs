@@ -26,7 +26,6 @@ use crate::args::TargetAddr;
 use crate::args::get_formatter_by_kind;
 use bytes::BytesMut;
 use logged_stream::ConsoleLogger;
-use logged_stream::DefaultFilter;
 use logged_stream::LoggedStream;
 use logged_stream::RecordKind;
 use logged_stream::RecordKindFilter;
@@ -159,17 +158,22 @@ async fn connect_to_target(target: &TargetAddr) -> io::Result<tokio_net::TcpStre
 
 async fn incoming_connection_handle(
     arguments: Arguments,
-    source_stream: tokio_net::TcpStream,
+    client_stream: tokio_net::TcpStream,
     conn_stats: &ConnStats,
 ) {
     let conn_log = conn_stats.conn_log();
-    let (source_stream_read_half, source_stream_write_half) = io::split(LoggedStream::new(
-        source_stream,
+    // The client stream logs the conversation: both directions' payload (`<` for
+    // what it reads from the client, `>` for what it writes back) and its `!` errors.
+    // Its shutdown and drop records stay silent, on both streams: `relay` logs one
+    // clearer line per direction as it closes (which way, and why), and the close
+    // summary marks the end.
+    let (client_stream_read_half, client_stream_write_half) = io::split(LoggedStream::new(
+        client_stream,
         get_formatter_by_kind(arguments.formatting, arguments.separator.as_str()),
-        DefaultFilter,
+        RecordKindFilter::new(&[RecordKind::Read, RecordKind::Write, RecordKind::Error]),
         ConsoleLogger::new_unchecked("debug").with_prefix(conn_log.prefix().to_string()),
     ));
-    let destination_stream = match connect_to_target(&arguments.remote_addr).await {
+    let server_stream = match connect_to_target(&arguments.remote_addr).await {
         Ok(stream) => stream,
         Err(error) => {
             conn_log.error(format_args!(
@@ -177,7 +181,7 @@ async fn incoming_connection_handle(
                 arguments.remote_addr
             ));
             conn_stats.record_teardown(Teardown::ConnectFailed);
-            // Returning drops the source halves, closing the client connection.
+            // Returning drops the client halves, closing the client connection.
             return;
         }
     };
@@ -188,7 +192,7 @@ async fn incoming_connection_handle(
     // never silently swallows it. (A literal `IP:port` target would just repeat itself,
     // so it is left out.)
     if let TargetAddr::Named { .. } = &arguments.remote_addr {
-        let peer_suffix = destination_stream
+        let peer_suffix = server_stream
             .peer_addr()
             .map(|peer| format!(" ({peer})"))
             .unwrap_or_default();
@@ -197,16 +201,17 @@ async fn incoming_connection_handle(
             arguments.remote_addr
         ));
     }
-    // The destination stream carries the same `[#N] ` prefix as the source stream:
-    // its Drop/Error/Shutdown records are the connection's lines too, and without
-    // the shared tag they would be unattributable.
-    let (destination_stream_read_half, destination_stream_write_half) =
-        io::split(LoggedStream::new(
-            destination_stream,
-            get_formatter_by_kind(arguments.formatting, arguments.separator.as_str()),
-            RecordKindFilter::new(&[RecordKind::Drop, RecordKind::Error, RecordKind::Shutdown]),
-            ConsoleLogger::new_unchecked("debug").with_prefix(conn_log.prefix().to_string()),
-        ));
+    // The server stream logs only its `!` errors: its payload is the same bytes the
+    // client stream already shows (logging them here as well would print every byte
+    // twice), and its shutdown and drop records are covered as above. Its errors are
+    // the connection's lines too, so they carry the same `[#N] ` prefix — without
+    // it they would be unattributable.
+    let (server_stream_read_half, server_stream_write_half) = io::split(LoggedStream::new(
+        server_stream,
+        get_formatter_by_kind(arguments.formatting, arguments.separator.as_str()),
+        RecordKindFilter::new(&[RecordKind::Error]),
+        ConsoleLogger::new_unchecked("debug").with_prefix(conn_log.prefix().to_string()),
+    ));
 
     // Relay both directions concurrently, running each to completion. As each
     // direction ends (end-of-stream or a read/write error) it shuts down its
@@ -232,14 +237,14 @@ async fn incoming_connection_handle(
         None => {
             tokio::join!(
                 relay(
-                    source_stream_read_half,
-                    destination_stream_write_half,
+                    client_stream_read_half,
+                    server_stream_write_half,
                     client_to_server,
                     None,
                 ),
                 relay(
-                    destination_stream_read_half,
-                    source_stream_write_half,
+                    server_stream_read_half,
+                    client_stream_write_half,
                     server_to_client,
                     None,
                 ),
@@ -251,14 +256,14 @@ async fn incoming_connection_handle(
             let relays = async {
                 tokio::join!(
                     relay(
-                        source_stream_read_half,
-                        destination_stream_write_half,
+                        client_stream_read_half,
+                        server_stream_write_half,
                         client_to_server,
                         Some(&clock),
                     ),
                     relay(
-                        destination_stream_read_half,
-                        source_stream_write_half,
+                        server_stream_read_half,
+                        client_stream_write_half,
                         server_to_client,
                         Some(&clock),
                     ),
@@ -268,8 +273,7 @@ async fn incoming_connection_handle(
             // not in the arm handler: `select!` drops the losing `relays` future —
             // closing the sockets and sending the FIN — before an arm handler
             // would run, so logging in the handler could let a peer observe the
-            // close before the line exists. Logging first also orders the line
-            // before the streams' shutdown/drop records.
+            // close before the line exists.
             tokio::select! {
                 _ = relays => {}
                 _ = async {
@@ -297,10 +301,11 @@ async fn incoming_connection_handle(
 /// moving data. The copy ends when `reader` reaches end-of-stream (`read_buf` yields
 /// `Ok(0)`) or a read/write fails; treating a zero-length read as end-of-stream
 /// (rather than retrying) is what stops a closed peer from being polled in a tight
-/// loop. How it ended is reported to `stats` for the close summary, and the writer
-/// is then shut down (a half-close); because the opposite direction is driven to
-/// completion independently, any data still in flight there is delivered before
-/// the connection closes.
+/// loop. How it ended is reported to `stats`, which logs the direction's closing
+/// line (`- client -> server closed (client finished sending)`) and keeps the ending
+/// for the close summary, and the writer is then shut down (a half-close); because
+/// the opposite direction is driven to completion independently, any data still in
+/// flight there is delivered before the connection closes.
 async fn relay<R, W>(
     mut reader: R,
     mut writer: W,

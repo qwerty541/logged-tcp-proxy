@@ -1,7 +1,8 @@
 //! The per-connection close summary: the [`ConnStats`] record that logs a
 //! connection's accept line when it is created and its one-line close summary when
-//! it is dropped, the byte counters both relay directions bump in between, and the
-//! vocabulary the summary is worded in.
+//! it is dropped, the byte counters both relay directions bump in between, the line
+//! each direction logs as it closes ([`DirectionClosed`]), and the vocabulary those
+//! lines are worded in.
 //!
 //! The record is created in [`run_accept_loop`](super::run_accept_loop), before the
 //! connection's task is spawned, and lent to
@@ -76,6 +77,15 @@ impl Direction {
     }
 }
 
+impl fmt::Display for Direction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Direction::ClientToServer => "client -> server",
+            Direction::ServerToClient => "server -> client",
+        })
+    }
+}
+
 /// How one relay direction stopped, as [`relay`](super::relay) saw it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RelayEnd {
@@ -104,6 +114,24 @@ impl fmt::Display for Ending {
             Ending::FinishedSending(peer) => write!(f, "{peer} finished sending"),
             Ending::Error(peer, kind) => write!(f, "{peer}-side error: {kind}"),
         }
+    }
+}
+
+/// The line a relay direction logs, at `debug`, when it stops, as plain data. Its
+/// [`Display`](fmt::Display) is the logged message without the `[#N] ` tag, e.g.
+/// `- client -> server closed (client finished sending)`: which way the bytes no
+/// longer flow, and why, in the summary's own words. The leading `-` is the marker
+/// logged-stream uses for a writer it shuts down, so the line reads like the stream
+/// records around it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DirectionClosed {
+    pub(crate) direction: Direction,
+    pub(crate) ending: Ending,
+}
+
+impl fmt::Display for DirectionClosed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "- {} closed ({})", self.direction, self.ending)
     }
 }
 
@@ -369,15 +397,17 @@ impl RelayStats<'_> {
             .fetch_add(bytes as u64, Ordering::Relaxed);
     }
 
-    /// Record how this direction stopped, and whether it was the first to. The
-    /// ending is stored before the claim, so the first direction's ending is always
-    /// there once `first_to_stop` names it.
+    /// Record how this direction stopped, and whether it was the first to, then log
+    /// the direction's closing line. The ending is stored before the claim, so the
+    /// first direction's ending is always there once `first_to_stop` names it.
     pub(super) fn finished(self, end: RelayEnd) {
-        let _ = self
-            .stats
-            .counters(self.direction)
-            .ending
-            .set(self.direction.ending(end));
+        let ending = self.direction.ending(end);
+        let _ = self.stats.counters(self.direction).ending.set(ending);
         let _ = self.stats.first_to_stop.set(self.direction);
+        let closed = DirectionClosed {
+            direction: self.direction,
+            ending,
+        };
+        self.stats.conn_log.debug(format_args!("{closed}"));
     }
 }

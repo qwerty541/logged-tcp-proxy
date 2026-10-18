@@ -26,6 +26,7 @@ use super::log_capture::install_capturing_logger;
 use super::log_capture::wait_for_line;
 use crate::conn::stats::CloseReason;
 use crate::conn::stats::Direction;
+use crate::conn::stats::DirectionClosed;
 use crate::conn::stats::Ending;
 use crate::conn::stats::Peer;
 use crate::conn::stats::RelayEnd;
@@ -228,6 +229,46 @@ fn relay_endings_are_charged_to_the_socket_they_happened_on() {
         ),
     ] {
         assert_eq!(direction.ending(end), expected, "{direction:?}, {end:?}");
+    }
+}
+
+/// The line each relay direction logs as it closes names the direction and why, in
+/// the summary's words — including a failed write, where the failing side is the
+/// direction's receiver. (It logs at `debug`, which the shared capture filters out,
+/// so the black-box script pins it on the real binary.)
+#[test]
+fn direction_closed_lines_name_the_direction_and_why() {
+    use io::ErrorKind::BrokenPipe;
+    use io::ErrorKind::ConnectionReset;
+
+    for (direction, end, expected) in [
+        (
+            Direction::ClientToServer,
+            RelayEnd::Eof,
+            "- client -> server closed (client finished sending)",
+        ),
+        (
+            Direction::ServerToClient,
+            RelayEnd::Eof,
+            "- server -> client closed (server finished sending)",
+        ),
+        (
+            Direction::ClientToServer,
+            RelayEnd::ReadFailed(ConnectionReset),
+            "- client -> server closed (client-side error: connection reset)",
+        ),
+        (
+            Direction::ClientToServer,
+            RelayEnd::WriteFailed(BrokenPipe),
+            "- client -> server closed (server-side error: broken pipe)",
+        ),
+    ] {
+        let line = DirectionClosed {
+            direction,
+            ending: direction.ending(end),
+        }
+        .to_string();
+        assert_eq!(line, expected, "{direction:?}, {end:?}");
     }
 }
 
