@@ -204,10 +204,8 @@ $ logged_tcp_proxy --bind-listener-addr 127.0.0.1:20502 --remote-addr 127.0.0.1:
 [2023-05-04T02:39:37Z DEBUG] [#1] < 00:03:00:00:00:04:01:01:01:01:00:04:00:00:00:04:01:02:01:01:00:05:00:00:00:23:01:03:20:00:7b:00:0c:ff:ff:ff:ff:ff:ff:ff:ff:ff:ff:ff:ff:01:36:40:49:0f:db:40:09:21:fb:54:44:2d:18:ff:ff:00:06:00:00:00:05:01:03:02:ff:ff:00:07:00:00:00:05:01:03:02:00:01:00:08:00:00:00:03:01:83:02:00:09:00:00:00:09:01:03:06:00:01:00:02:00:03:00:0a:00:00:00:05:01:04:02:00:7b
 [2023-05-04T02:40:18Z DEBUG] [#1] > 00:0b:00:00:00:06:6f:03:03:e8:00:01
 [2023-05-04T02:40:18Z DEBUG] [#1] < 00:0b:00:00:00:05:6f:03:02:00:00
-[2023-05-04T02:40:18Z DEBUG] [#1] - Writer shutdown request.
-[2023-05-04T02:40:18Z DEBUG] [#1] - Writer shutdown request.
-[2023-05-04T02:40:18Z DEBUG] [#1] x Deallocated.
-[2023-05-04T02:40:18Z DEBUG] [#1] x Deallocated.
+[2023-05-04T02:40:18Z DEBUG] [#1] - client -> server closed (client finished sending)
+[2023-05-04T02:40:18Z DEBUG] [#1] - server -> client closed (server finished sending)
 [2023-05-04T02:40:18Z INFO] [#1] Closed connection from 127.0.0.1:50376 (client finished sending first): client -> server 196 B, server -> client 149 B in 41.208s
 ```
 
@@ -222,14 +220,15 @@ How to read this output:
   their lines interleave and the id is what tells them apart. Listener-level lines (the
   bind line, accept errors) carry no id. Disable the tags with `--no-connection-ids`.
 - `DEBUG` lines are the relayed payload, shown here in the default lowercase-hex
-  format with `:` separators (change with `--formatting` and `--separator`), followed
-  by the connection's teardown: `-` when the proxy passes a close on to one side
-  (`Writer shutdown request.`) and `x` when it releases a socket (`Deallocated.`) —
-  once for each side, so each normally appears twice.
-- `<` marks bytes **read from the client** (source) side; `>` marks bytes **written
-  back to the client** (these originate from the remote server).
-- Both directions of the conversation are logged once, on the client (source)
-  connection, so the same bytes are never printed twice.
+  format with `:` separators (change with `--formatting` and `--separator`), and
+  one `-` line for each direction as it closes, saying which way and why in the
+  same words as the close summary:
+  `- client -> server closed (client finished sending)`. A direction cut short by
+  the idle timeout or Ctrl-C has no such line.
+- `<` marks bytes **read from the client**; `>` marks bytes **written back to the
+  client** (these originate from the remote server).
+- Both directions of the conversation are logged once, on the client's connection,
+  so the same bytes are never printed twice.
 - A connection's last line is its close summary, logged at `INFO`, so it stays
   visible with `--level info` (disable it with `--no-close-summary`):
   - `client -> server` counts the bytes read from the client — the total of the `<`
