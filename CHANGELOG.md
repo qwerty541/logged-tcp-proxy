@@ -10,8 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Every proxied connection now ends with a one-line summary, for example `[#1] Closed connection from 127.0.0.1:50512 (client finished sending first): client -> server 6 B, server -> client 10 B in 0.012s`. It shows how many bytes went in each direction, how long the connection was open, and why it closed: which side finished sending first, an error and the side it happened on (e.g. `client-side error: connection reset`), the idle timeout, a failed connection to the destination, or `interrupted` when the proxy was stopped with Ctrl-C. The summary is logged at the `info` level, so it stays visible with `--level info`, which hides the payload.
-- Added a `--no-close-summary` (`-x`) flag that turns the close summary off, leaving the console output exactly as in earlier versions.
+- Added a `--no-close-summary` (`-x`) flag that turns the close summary off.
 - Added `scripts/peer.py`, a scriptable TCP client and server (standard-library Python) for manually testing the proxy from a clone of the repository. They log their traffic in the proxy's own format, and `python3 scripts/peer.py recipes` lists ready-made three-terminal scenarios. The interactive client repeats traffic with `/loop [COUNT] [STEP ...]` (Ctrl-C stops the loop, not the client) and sends random payloads with the `rand:16` step. This is repository tooling only, not part of the published crate.
+
+### Changed
+
+- At the `debug` level, a connection's end is now easier to read: each direction logs one line saying which way it closed and why, e.g. `[#1] - client -> server closed (client finished sending)`. These lines replace the two identical `- Writer shutdown request.` lines and two `x Deallocated.` lines that were printed for every connection before.
 
 ### Documentation
 
