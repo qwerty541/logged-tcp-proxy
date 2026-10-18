@@ -235,6 +235,8 @@ How to read this output:
     lines — and `server -> client` the bytes read from the server — the total of the
     `>` lines, plus at most one 2 KiB chunk that was read but never delivered, when
     writing to the client failed or was cut short by the idle timeout or Ctrl-C.
+    A count of 1 KiB or more is followed by a readable size, e.g.
+    `134217728 B (128.0 MiB)`, in binary units (1 KiB = 1024 B).
   - `in` is the time since the proxy accepted the connection.
   - The reason in parentheses says how the connection ended, as the proxy observed it:
     - `client finished sending first` / `server finished sending first`: that side
