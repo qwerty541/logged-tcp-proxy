@@ -117,8 +117,12 @@ side:
 - The client's tag `[c:PORT]` is the port in the proxy's
   `[#N] Incoming connection from 127.0.0.1:PORT` line. The server's `[s:PORT]` is the
   proxy's outgoing side.
-- The peers also show what the proxy cannot: `-` FIN sent, `=` EOF received, `x`
-  socket closed (and how), `!` an error (of the socket, or a refused command).
+- The peers also show their own side of each close, which the proxy only sees from
+  the middle: `-` FIN sent, `=` EOF received, `x` socket closed (and how), `!` an
+  error (of the socket, or a refused command). The proxy logs one line per
+  direction as it closes, e.g.
+  `[#N] - client -> server closed (client finished sending)`, and then its close
+  summary.
 - After a clean close, each side's closing line, `x closed: sent N B, received M B`,
   reconciles with the proxy's close summary, `[#N] Closed connection from ...
   (<reason>): client -> server N B, server -> client M B in S.mmms`: its
