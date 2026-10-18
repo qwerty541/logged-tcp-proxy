@@ -194,6 +194,52 @@ pub(super) enum Teardown {
     ConnectFailed,
 }
 
+/// A byte count as the close summary shows it: always the exact number of bytes and,
+/// from 1 KiB up, a readable size after it, e.g. `1143 B (1.1 KiB)`. The exact number
+/// comes first and stays in the same place, so it can still be compared with protocol
+/// frames and the peers' own counts, or searched for; the readable size only helps
+/// the eye with large ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ByteCount(pub(crate) u64);
+
+/// The binary units of a [`ByteCount`]'s readable size, the `n`-th being `1024^(n+1)`
+/// bytes. EiB is as far as a `u64` reaches: its largest value is just under 16 EiB.
+const BINARY_UNITS: [&str; 6] = ["KiB", "MiB", "GiB", "TiB", "PiB", "EiB"];
+
+impl ByteCount {
+    /// The readable size, as tenths of the largest binary unit it reaches, rounded
+    /// half up, and that unit — or `None` below 1 KiB, where the exact count alone is
+    /// readable. A size that rounds up to 1024.0 moves on to the next unit, so
+    /// `1048575 B` reads `1.0 MiB`, never `1024.0 KiB`. Integer arithmetic only (in
+    /// `u128`, so nothing can overflow), so the result cannot differ between platforms.
+    fn readable(self) -> Option<(u128, &'static str)> {
+        let bytes = u128::from(self.0);
+        if bytes < 1024 {
+            return None;
+        }
+        let mut scale: u128 = 1024;
+        let mut unit = 0;
+        loop {
+            let tenths = (bytes * 10 + scale / 2) / scale;
+            if tenths < 10 * 1024 || unit == BINARY_UNITS.len() - 1 {
+                return Some((tenths, BINARY_UNITS[unit]));
+            }
+            scale *= 1024;
+            unit += 1;
+        }
+    }
+}
+
+impl fmt::Display for ByteCount {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} B", self.0)?;
+        match self.readable() {
+            Some((tenths, unit)) => write!(f, " ({}.{} {unit})", tenths / 10, tenths % 10),
+            None => Ok(()),
+        }
+    }
+}
+
 /// A connection's close summary as plain data. Its [`Display`](fmt::Display) is the
 /// logged message, without the `[#N] ` tag that [`ConnLog`] adds.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -217,11 +263,11 @@ impl fmt::Display for Summary {
         // and to search for.
         write!(
             f,
-            "Closed connection from {} ({}): client -> server {} B, server -> client {} B in {}.{:03}s",
+            "Closed connection from {} ({}): client -> server {}, server -> client {} in {}.{:03}s",
             self.client_addr,
             self.reason,
-            self.client_to_server,
-            self.server_to_client,
+            ByteCount(self.client_to_server),
+            ByteCount(self.server_to_client),
             self.elapsed.as_secs(),
             self.elapsed.subsec_millis(),
         )

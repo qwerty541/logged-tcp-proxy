@@ -24,6 +24,7 @@ use super::helpers::spawn_proxy_with_timeout;
 use super::log_capture::captured_lines;
 use super::log_capture::install_capturing_logger;
 use super::log_capture::wait_for_line;
+use crate::conn::stats::ByteCount;
 use crate::conn::stats::CloseReason;
 use crate::conn::stats::Direction;
 use crate::conn::stats::DirectionClosed;
@@ -61,13 +62,19 @@ where
 }
 
 /// The `[#1]` close summary line expected for `client_addr`, up to (not including)
-/// its duration.
+/// its duration. For counts below 1 KiB only, which render as just `N B`: a test
+/// with a larger count spells its line out in full, so the expectation stays a
+/// literal rather than coming from the code under test.
 fn summary_prefix(
     client_addr: SocketAddr,
     reason: &str,
     client_to_server: u64,
     server_to_client: u64,
 ) -> String {
+    assert!(
+        client_to_server < 1024 && server_to_client < 1024,
+        "summary_prefix renders counts below 1 KiB only"
+    );
     format!(
         "[#1] Closed connection from {client_addr} ({reason}): \
          client -> server {client_to_server} B, server -> client {server_to_client} B in "
@@ -136,6 +143,20 @@ fn summary_renders_every_close_reason() {
         "Closed connection from 127.0.0.1:50512 (client finished sending first): \
          client -> server 6 B, server -> client 10 B in 0.012s"
     );
+    // From 1 KiB up a count carries its readable size, right after the exact number.
+    assert_eq!(
+        Summary {
+            client_addr: "127.0.0.1:41774".parse().expect("a valid address"),
+            reason: ended(client_finished),
+            client_to_server: 134_217_728,
+            server_to_client: 1143,
+            elapsed: Duration::from_millis(42_615),
+        }
+        .to_string(),
+        "Closed connection from 127.0.0.1:41774 (client finished sending first): \
+         client -> server 134217728 B (128.0 MiB), server -> client 1143 B (1.1 KiB) \
+         in 42.615s"
+    );
 
     for (reason, expected) in [
         (ended(client_finished), "client finished sending first"),
@@ -186,6 +207,34 @@ fn summary_renders_every_close_reason() {
     ] {
         let line = render(CloseReason::ConnectFailed, elapsed);
         assert!(line.ends_with(expected), "{elapsed:?} rendered as {line:?}");
+    }
+}
+
+/// A byte count is always the exact number; from 1 KiB up a readable size follows,
+/// with one decimal in the largest binary unit it reaches, rounded half up — and a
+/// size that rounds up to 1024.0 moves on to the next unit.
+#[test]
+fn byte_counts_show_a_readable_size_from_1_kib_up() {
+    for (bytes, expected) in [
+        (0, "0 B"),
+        (1023, "1023 B"),
+        (1024, "1024 B (1.0 KiB)"),
+        // 1075 B is 1.0498 KiB and 1076 B is 1.0508 KiB: rounding is half up.
+        (1075, "1075 B (1.0 KiB)"),
+        (1076, "1076 B (1.1 KiB)"),
+        (1536, "1536 B (1.5 KiB)"),
+        (65_536, "65536 B (64.0 KiB)"),
+        // One byte short of 1 MiB rounds up to 1024.0 KiB, so it reads 1.0 MiB.
+        (1_048_575, "1048575 B (1.0 MiB)"),
+        (1_048_576, "1048576 B (1.0 MiB)"),
+        (134_217_728, "134217728 B (128.0 MiB)"),
+        (1_073_741_823, "1073741823 B (1.0 GiB)"),
+        (5 << 40, "5497558138880 B (5.0 TiB)"),
+        (3 << 50, "3377699720527872 B (3.0 PiB)"),
+        // The largest count there can be, just under 16 EiB.
+        (u64::MAX, "18446744073709551615 B (16.0 EiB)"),
+    ] {
+        assert_eq!(ByteCount(bytes).to_string(), expected, "{bytes} B");
     }
 }
 
@@ -556,7 +605,14 @@ async fn multi_chunk_transfers_are_counted_exactly() {
     sender.await.expect("the sending task panicked");
     assert_eq!(echoed, payload, "the payload must round-trip intact");
 
-    expect_summary(client_addr, "client finished sending first", 65_536, 65_536).await;
+    // Spelled out in full rather than through `summary_prefix`: at 64 KiB each count
+    // also carries its readable size, which this pins end to end.
+    let line = wait_for_line(&format!(
+        "[#1] Closed connection from {client_addr} (client finished sending first): \
+         client -> server 65536 B (64.0 KiB), server -> client 65536 B (64.0 KiB) in "
+    ))
+    .await;
+    assert_ends_in_duration(&line);
 }
 
 /// A connection still open when the runtime shuts down — what Ctrl-C does in `main`
