@@ -376,8 +376,8 @@ def test_direction_markers_and_no_double_logging(binary):
     """Each direction is marked correctly and logged exactly once.
 
     `<` marks bytes read from the client, `>` marks bytes written back to it. Both
-    directions are logged on the SOURCE stream; the destination stream deliberately
-    uses a RecordKindFilter so the same bytes are not printed a second time. An echo
+    directions are logged on the client stream; the server stream deliberately logs
+    only its errors, so the same bytes are not printed a second time. An echo
     server cannot check any of this — with identical bytes both ways, swapped markers
     and doubled lines both look correct — so this case uses a remote whose reply
     differs from the request. Both payloads contain hex letters on purpose: a
@@ -429,7 +429,7 @@ def test_direction_markers_and_no_double_logging(binary):
         fail("[markers] the `>` reply line does not carry the same `[#%s]` tag" % conn_id, output)
 
     # De-duplication: neither payload may appear more than once anywhere in the
-    # output, which is what the destination stream's RecordKindFilter guarantees.
+    # output, which is what the server stream's RecordKindFilter guarantees.
     for label, payload_hex in (("request", request_hex), ("reply", reply_hex)):
         occurrences = output.count(payload_hex)
         if occurrences != 1:
@@ -450,9 +450,9 @@ def test_connection_id_tags(binary):
     echo_server, echo_port = start_echo_server()
     proxy, proxy_port = start_proxy(binary, echo_port)
     # The drain thread owns the proxy's stdout from the start, so the test can
-    # poll the output while the proxy is still running (see the Drop-record wait
+    # poll the output while the proxy is still running (see the summary wait
     # below) — a fixed post-close sleep would race stop_proxy's SIGTERM, which
-    # discards records the proxy has not yet written.
+    # discards lines the proxy has not yet written.
     drain, log_lines = start_output_drain(proxy)
     # Letter-bearing bytes, so the hex renderings can never collide with an
     # RFC 3339 timestamp (see test_direction_markers_and_no_double_logging). The
@@ -492,14 +492,13 @@ def test_connection_id_tags(binary):
         # ids are already extractable while the proxy still runs.
         id_a = id_for("".join(log_lines), port_a, "first")
         id_b = id_for("".join(log_lines), port_b, "second")
-        # Wait (bounded) for both connections' Drop records — emitted only after
-        # each handler observes both EOFs and drops its two LoggedStreams — and for
-        # their close summaries, which follow them, before terminating the proxy.
+        # Wait (bounded) for both connections' close summaries — each connection's
+        # last line, logged only once its handler has seen both sides finish —
+        # before terminating the proxy.
         deadline = time.time() + IO_TIMEOUT
         while time.time() < deadline:
             text = "".join(log_lines)
-            if all(text.count("[#%s] x Deallocated." % i) >= 2
-                   and ("[#%s] Closed connection from " % i) in text for i in (id_a, id_b)):
+            if all(("[#%s] Closed connection from " % i) in text for i in (id_a, id_b)):
                 break
             time.sleep(0.05)
     finally:
@@ -515,16 +514,21 @@ def test_connection_id_tags(binary):
             fail("[conn-ids] the %s client's payload line is not tagged [#%s]"
                  % (label, conn_id), output)
 
-    # Exactly TWO tagged Drop records per connection — one from the source stream
-    # (DefaultFilter logs Drop too) and one from the destination stream. The exact
-    # count is what pins the DESTINATION logger's prefix: if it lost the tag, only
-    # one tagged record per connection would remain (presence alone would pass
-    # vacuously via the source stream's record).
+    # Exactly one closing line per direction, tagged with each connection's own id.
+    # logged-stream's own shutdown and drop records (two identical pairs per
+    # connection) stay silent. The server stream now logs only its `!` errors, and
+    # the server-rst peer recipe pins that those carry the tag too.
     for conn_id, label in ((id_a, "first"), (id_b, "second")):
-        drops = output.count("[#%s] x Deallocated." % conn_id)
-        if drops != 2:
-            fail("[conn-ids] expected exactly 2 tagged Drop records for the %s "
-                 "connection (#%s), got %d" % (label, conn_id, drops), output)
+        for closed in ("- client -> server closed (client finished sending)",
+                       "- server -> client closed (server finished sending)"):
+            count = output.count("[#%s] %s" % (conn_id, closed))
+            if count != 1:
+                fail("[conn-ids] expected exactly one `[#%s] %s` line for the %s "
+                     "connection, got %d" % (conn_id, closed, label, count), output)
+    for silenced in ("Writer shutdown request.", "Deallocated."):
+        if silenced in output:
+            fail("[conn-ids] logged-stream's `%s` records must stay silent" % silenced,
+                 output)
 
     # Exactly one close summary per connection, carrying that connection's own
     # counts (3 B each way for the first, 4 B for the second): the overlapping
@@ -589,9 +593,10 @@ def test_no_connection_ids_flag(binary):
 def test_no_close_summary_flag(binary):
     """`--no-close-summary` removes the close summary and nothing else.
 
-    The absence is checked once the connection's two Drop records — logged just
-    before the summary would be, by the same task — are in the output, plus a
-    grace period; the payload and accept lines prove the relay really ran."""
+    The absence is checked once the connection's last closing line — `- server ->
+    client closed ...`, logged just before the summary would be, by the same task —
+    is in the output, plus a grace period; the payload, accept and closing lines
+    prove the relay really ran."""
     echo_server, echo_port = start_echo_server()
     proxy, proxy_port = start_proxy(binary, echo_port, extra_args=("--no-close-summary",))
     drain, log_lines = start_output_drain(proxy)
@@ -608,13 +613,14 @@ def test_no_close_summary_flag(binary):
                 fail("[no-close-summary] echo mismatch")
         accept = wait_for_output(log_lines, r"\[#(\d+)\] Incoming connection from %s:%d\b"
                                  % (re.escape(HOST), client_port))
+        last_closed = None
         if accept is not None:
-            drop_record = "[#%s] x Deallocated." % accept.group(1)
-            deadline = time.monotonic() + IO_TIMEOUT
-            while ("".join(log_lines).count(drop_record) < 2
-                   and time.monotonic() < deadline):
-                time.sleep(0.05)
-            time.sleep(0.3)  # a summary would follow the Drop records at once
+            # The echo server closes once it sees the client's close, so the
+            # server -> client direction is the last to close.
+            last_closed = ("[#%s] - server -> client closed (server finished sending)"
+                           % accept.group(1))
+            wait_for_output(log_lines, re.escape(last_closed))
+            time.sleep(0.3)  # a summary would follow the closing lines at once
     finally:
         output = drain_proxy_output(proxy, drain, log_lines)
         echo_server.close()
@@ -624,6 +630,8 @@ def test_no_close_summary_flag(binary):
     if not re.search(r"\[#\d+\] Incoming connection from %s:%d\b"
                      % (re.escape(HOST), client_port), output):
         fail("[no-close-summary] the accept line must still be logged", output)
+    if last_closed is None or last_closed not in output:
+        fail("[no-close-summary] the closing lines must still be logged", output)
     if "Closed connection from" in output:
         fail("[no-close-summary] no close summary may be logged with --no-close-summary",
              output)
@@ -1194,8 +1202,9 @@ def run_peer_recipe(binary, peer, recipe):
                 processes[role].wait(timeout=START_TIMEOUT)
             except subprocess.TimeoutExpired:
                 fail("[%s] the %s did not finish" % (case, role), all_output())
-        # The proxy's teardown records trail the peers slightly: wait (bounded)
-        # for its expected lines rather than sleeping a fixed time.
+        # The proxy's last lines (its closing lines and the close summary) trail the
+        # peers slightly: wait (bounded) for its expected lines rather than sleeping
+        # a fixed time.
         deadline = time.monotonic() + IO_TIMEOUT
         while time.monotonic() < deadline:
             if missing_in_order(output("proxy"), recipe["expect"]["proxy"]) is None:

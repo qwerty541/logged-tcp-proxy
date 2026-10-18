@@ -797,24 +797,29 @@ RECIPES = [
         "client": ["hello\\n", "read"],
         "look": [
             "T1: [#1] < 68:65:6c:6c:6f:0a (hello) then [#1] > 72:65:3a:20:... (re: hello).",
-            "Then two '- Writer shutdown request.' lines (one per direction, as each",
-            "FIN is forwarded), two 'x Deallocated.' lines, and last the INFO close",
-            "summary '[#1] Closed connection from 127.0.0.1:<port> (client finished",
-            "sending first): client -> server 6 B, server -> client 10 B in <t>s':",
-            "the same counts as T3's and T2's 'x closed' lines.",
+            "Then '- client -> server closed (client finished sending)' and",
+            "'- server -> client closed (server finished sending)', as each side's close",
+            "is passed on, and last the INFO close summary '[#1] Closed connection from",
+            "127.0.0.1:<port> (client finished sending first): client -> server 6 B,",
+            "server -> client 10 B in <t>s': the same counts as T3's and T2's",
+            "'x closed' lines.",
         ],
         "ci": True,
         "expect": {
             "client": ["< 68:65:6c:6c:6f:0a", "> 72:65:3a:20:68:65:6c:6c:6f:0a",
                        "- FIN sent", "= EOF", "x closed: sent 6 B, received 10 B"],
             "proxy": ["[#1] < 68:65:6c:6c:6f:0a", "[#1] > 72:65:3a:20:68:65:6c:6c:6f:0a",
-                      "[#1] - Writer shutdown request.", "[#1] x Deallocated.",
+                      "[#1] - client -> server closed (client finished sending)",
+                      "[#1] - server -> client closed (server finished sending)",
                       "[#1] Closed connection from 127.0.0.1:",
                       "(client finished sending first): client -> server 6 B, "
                       "server -> client 10 B in "],
             "server": ["< 68:65:6c:6c:6f:0a", "> 72:65:3a:20:68:65:6c:6c:6f:0a",
                        "= EOF", "- FIN sent", "x closed: sent 10 B, received 6 B"],
         },
+        # logged-stream's own shutdown and drop records stay silent: one line per
+        # direction replaces their two identical pairs.
+        "absent": {"proxy": ["Writer shutdown request.", "Deallocated."]},
     },
     {
         "name": "pipe",
@@ -831,7 +836,9 @@ RECIPES = [
         "ci": True,
         "expect": {
             "client": ["< 68:65:6c:6c:6f:0a", "- FIN sent", "= EOF", "x closed"],
-            "proxy": ["[#1] < 68:65:6c:6c:6f:0a", "[#1] x Deallocated.",
+            "proxy": ["[#1] < 68:65:6c:6c:6f:0a",
+                      "[#1] - client -> server closed (client finished sending)",
+                      "[#1] - server -> client closed (server finished sending)",
                       "[#1] Closed connection from 127.0.0.1:",
                       "(client finished sending first): client -> server 10 B, "
                       "server -> client 10 B in "],
@@ -858,7 +865,9 @@ RECIPES = [
                        "< 70:69:6e:67:0a", "loop finished (2 round(s))",
                        "* looping rand:4 sleep:0.2, 3 times",
                        "loop finished (3 round(s))", "x closed: sent 27 B, received 0 B"],
-            "proxy": ["[#1] < 70:69:6e:67:0a", "[#1] x Deallocated.",
+            "proxy": ["[#1] < 70:69:6e:67:0a",
+                      "[#1] - client -> server closed (client finished sending)",
+                      "[#1] - server -> client closed (server finished sending)",
                       "[#1] Closed connection from 127.0.0.1:",
                       "(client finished sending first): client -> server 27 B, "
                       "server -> client 0 B in "],
@@ -892,17 +901,21 @@ RECIPES = [
         "server": ["--mode", "sink", "--on-eof", "sleep:0.5", "RESPONSE\\n"],
         "client": ["REQ\\n", "shut"],
         "look": [
-            "T1: < REQ, then '- Writer shutdown request.' at once (the client's FIN,",
-            "forwarded), then 0.5 s later > RESPONSE: data still flows the other way.",
-            "T3 prints '- FIN sent' before it receives the response. T1's close",
-            "summary says '(client finished sending first)' although the response came",
-            "later: finishing sending is not finishing the conversation.",
+            "T1: < REQ, then '- client -> server closed (client finished sending)' at",
+            "once (the client's FIN, passed on), then 0.5 s later > RESPONSE: data",
+            "still flows the other way, until '- server -> client closed (server",
+            "finished sending)'. T3 prints '- FIN sent' before it receives the",
+            "response. T1's close summary says '(client finished sending first)'",
+            "although the response came later: finishing sending is not finishing",
+            "the conversation.",
         ],
         "ci": True,
         "expect": {
             "client": ["< 52:45:51:0a", "- FIN sent", "> 52:45:53:50:4f:4e:53:45:0a", "= EOF"],
-            "proxy": ["[#1] < 52:45:51:0a", "[#1] - Writer shutdown request.",
+            "proxy": ["[#1] < 52:45:51:0a",
+                      "[#1] - client -> server closed (client finished sending)",
                       "[#1] > 52:45:53:50:4f:4e:53:45:0a",
+                      "[#1] - server -> client closed (server finished sending)",
                       "[#1] Closed connection from 127.0.0.1:",
                       "(client finished sending first): client -> server 4 B, "
                       "server -> client 9 B in "],
@@ -917,13 +930,13 @@ RECIPES = [
         "server": [],
         "client": ["hello\\n", "read", "rst"],
         "look": [
-            "T1: an ERROR line '! Error during async read: ...' (connection reset). T2 logs a",
-            "plain '= EOF': the proxy turns the RST into a FIN towards the server.",
-            "The ERROR line reads the same whichever side reset; the close summary",
-            "names it: '(client-side error: connection reset)'. The mirror image:",
-            "server --on-accept read rst, client 'hello\\n' read, gives",
-            "'(server-side error: ...)'. Rerun the proxy with -l info: payload lines",
-            "vanish, the ERROR line and the summary stay.",
+            "T1: an ERROR line '! Error during async read: ...' (connection reset), then",
+            "'- client -> server closed (client-side error: ...)': the proxy passes the",
+            "reset on to the server as an ordinary close, so T2 logs a plain '= EOF'.",
+            "The ERROR line reads the same whichever side reset; the '-' line and the",
+            "close summary name the side: '(client-side error: connection reset)'.",
+            "The server-rst recipe is the mirror image. Rerun the proxy with -l info:",
+            "payload and '-' lines vanish, the ERROR line and the summary stay.",
         ],
         "ci": True,
         "expect": {
@@ -931,11 +944,41 @@ RECIPES = [
             # Only the side of the error is pinned: which error kind the OS reports a
             # reset as (`connection reset` on Linux) can differ elsewhere.
             "proxy": ["[#1] < 68:65:6c:6c:6f:0a", "[#1] ! Error during async read",
+                      "[#1] - client -> server closed (client-side error: ",
+                      "[#1] - server -> client closed (server finished sending)",
                       "[#1] Closed connection from 127.0.0.1:", "(client-side error: ",
                       "): client -> server 6 B, server -> client 10 B in "],
             "server": ["< 68:65:6c:6c:6f:0a", "= EOF", "x closed"],
         },
         "absent": {"server": [" ! "]},
+    },
+    {
+        "name": "server-rst",
+        "about": "The server resets; the client sees an ordinary FIN.",
+        "proxy": [],
+        "server": ["--on-accept", "read", "rst"],
+        "client": ["hello\\n", "read"],
+        "look": [
+            "The mirror image of client-rst. T1: an ERROR line '! Error during async",
+            "read: ...' from the server's socket, then '- server -> client closed",
+            "(server-side error: ...)': the proxy passes the reset on to the client as",
+            "an ordinary close, so T3 logs a plain '= EOF'. The close summary names",
+            "the server: '(server-side error: connection reset)'.",
+        ],
+        "ci": True,
+        "expect": {
+            "client": ["< 68:65:6c:6c:6f:0a", "= EOF", "x closed: sent 6 B, received 0 B"],
+            # The ERROR line comes from the server's stream, the only one of its
+            # records still logged: this is what pins that it carries the tag too.
+            # As in client-rst, only the side of the error is pinned.
+            "proxy": ["[#1] < 68:65:6c:6c:6f:0a", "[#1] ! Error during async read",
+                      "[#1] - server -> client closed (server-side error: ",
+                      "[#1] - client -> server closed (client finished sending)",
+                      "[#1] Closed connection from 127.0.0.1:", "(server-side error: ",
+                      "): client -> server 6 B, server -> client 0 B in "],
+            "server": ["< 68:65:6c:6c:6f:0a", "x reset (RST sent)"],
+        },
+        "absent": {"client": [" ! "]},
     },
     {
         "name": "server-close",
@@ -951,7 +994,10 @@ RECIPES = [
         "ci": True,
         "expect": {
             "client": ["> 62:79:65:0a", "= EOF", "- FIN sent", "x closed: sent 0 B, received 4 B"],
-            "proxy": ["[#1] > 62:79:65:0a", "[#1] Closed connection from 127.0.0.1:",
+            "proxy": ["[#1] > 62:79:65:0a",
+                      "[#1] - server -> client closed (server finished sending)",
+                      "[#1] - client -> server closed (client finished sending)",
+                      "[#1] Closed connection from 127.0.0.1:",
                       "(server finished sending first): client -> server 0 B, "
                       "server -> client 4 B in "],
             "server": ["> 62:79:65:0a", "- FIN sent", "= EOF", "x closed: sent 4 B, received 0 B"],
@@ -971,7 +1017,7 @@ RECIPES = [
         "ci": True,
         "expect": {
             "client": ["> 72:65:3a:20", "= EOF", "x closed"],
-            "proxy": ["[#1] Closing idle connection from 127.0.0.1:", "[#1] x Deallocated.",
+            "proxy": ["[#1] Closing idle connection from 127.0.0.1:",
                       "[#1] Closed connection from 127.0.0.1:",
                       "(idle timeout): client -> server 6 B, server -> client 10 B in "],
             "server": ["= EOF", "x closed"],
