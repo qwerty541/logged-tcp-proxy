@@ -117,8 +117,18 @@ side:
 - The client's tag `[c:PORT]` is the port in the proxy's
   `[#N] Incoming connection from 127.0.0.1:PORT` line. The server's `[s:PORT]` is the
   proxy's outgoing side.
-- The peers also show what the proxy cannot: `-` FIN sent, `=` EOF received, `x`
-  socket closed (and how), `!` an error (of the socket, or a refused command).
+- The peers also show their own side of each close, which the proxy only sees from
+  the middle: `-` FIN sent, `=` EOF received, `x` socket closed (and how), `!` an
+  error (of the socket, or a refused command). The proxy logs one line per
+  direction as it closes, e.g.
+  `[#N] - client -> server closed (client finished sending)`, and then its close
+  summary.
+- After a clean close, each side's closing line, `x closed: sent N B, received M B`,
+  reconciles with the proxy's close summary, `[#N] Closed connection from ...
+  (<reason>): client -> server N B, server -> client M B in S.mmms`: its
+  `client -> server` count is what the client sent and the server received, and
+  `server -> client` the other way round. After a failure they can differ: with the
+  destination down, the proxy never reads what the client sent.
 
 Besides typed input, both peers run scripted **steps**:
 - sending: text with escapes (`hello\n`), raw bytes (`x:00:01:6f:ff`), random bytes
@@ -150,8 +160,9 @@ between rounds, so it cannot flood by accident. What you type while a loop runs 
 once it ends. `/quit` (or Ctrl-D) ends the connection gracefully, and the same steps
 work as command-line arguments: `python3 scripts/peer.py client rand:16 sleep:1 loop`.
 
-Ready-made scenarios include banners, half-close, resets, the idle timeout,
-`--max-connections`, a destination that is down, and a MODBUS poll:
+Ready-made scenarios include banners, half-close, resets, a server that closes
+first, the idle timeout, `--max-connections`, a destination that is down, and a
+MODBUS poll:
 
 ```bash
 python3 scripts/peer.py recipes             # list them
@@ -167,8 +178,9 @@ Tips:
   destination only when a client arrives, and does not retry. The client may start
   before the proxy: it retries a refused connection for 15 s. It never opens a probe
   connection, so the first client is the proxy's `[#1]`.
-- Stop the proxy with Ctrl-C: it logs its shutdown line and exits with status 0.
-  `kill` (SIGTERM) or closing its terminal (SIGHUP) ends it without that.
+- Stop the proxy with Ctrl-C: it logs its shutdown line, then an `(interrupted)`
+  close summary for each connection still open, and exits with status 0. `kill`
+  (SIGTERM) or closing its terminal (SIGHUP) ends it without any of that.
 - To merge the three logs into one timeline:
   1. Use the same `-p` everywhere; `microseconds` avoids ties.
   2. `tee -i` each terminal into a file. The proxy logs to stderr, so use
@@ -212,7 +224,7 @@ This is a **binary-only** crate — there is intentionally no `lib` target.
 
 - `src/` — application source code
   - `args.rs` — CLI arguments, value enums, and payload formatter selection
-  - `conn/` — TCP proxying core: `mod.rs` holds the accept loop, connection cap, and bidirectional relay; `logging.rs` the per-connection `[#N]` console tag; `idle.rs` the idle-timeout clock and watchdog
+  - `conn/` — TCP proxying core: `mod.rs` holds the accept loop, connection cap, and bidirectional relay; `logging.rs` the per-connection `[#N]` console tag; `stats.rs` the per-connection record behind the accept line and the close summary (byte counters, how the connection ended); `idle.rs` the idle-timeout clock and watchdog
   - `main.rs` — binary entry point, async runtime construction, and logger initialization
   - `tests/` — in-crate integration tests (compiled only under `#[cfg(test)]`): `mod.rs` declares the submodules, grouped by behavior; `helpers.rs` holds the shared test helpers
 - `scripts/integration_test.py` — black-box test that drives the compiled binary

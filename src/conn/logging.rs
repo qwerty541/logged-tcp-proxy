@@ -79,7 +79,6 @@ impl ConnLog {
     }
 
     /// Log one of the connection's debug lines, tagged, at the `debug` level.
-    #[allow(dead_code)]
     pub(super) fn debug(&self, message: fmt::Arguments<'_>) {
         self.log(log::Level::Debug, message);
     }

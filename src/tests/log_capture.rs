@@ -1,8 +1,12 @@
 //! Capture of the proxy's own `log` output, so a test can assert on which
 //! lifecycle lines were — and were not — emitted.
 
+use super::helpers::IO_TIMEOUT;
 use std::sync::Mutex;
 use std::sync::Once;
+use std::time::Duration;
+use tokio::time::sleep;
+use tokio::time::timeout;
 
 /// Every message the proxy logs, captured so a test can assert on what was — and
 /// was not — logged. Tests share one process and run in parallel, so assertions
@@ -62,6 +66,43 @@ pub(super) fn captured_lines() -> Vec<String> {
         .lock()
         .expect("captured logs mutex poisoned")
         .clone()
+}
+
+/// Wait, bounded by [`IO_TIMEOUT`], for a captured line starting with `prefix`, and
+/// return it.
+///
+/// For lines a client cannot wait for on its own socket: a connection's close
+/// summary is logged only after the proxy has forwarded the close to both peers, so
+/// a client sees its connection end a moment before the line exists. Per the module
+/// comment, `prefix` must key off the test's own unique ephemeral addresses — and
+/// should spell out as much of the expected line as it can, since a closed client's
+/// port can be reused by a later test's client.
+pub(super) async fn wait_for_line(prefix: &str) -> String {
+    let find = || {
+        CAPTURED_LOGS
+            .lock()
+            .expect("captured logs mutex poisoned")
+            .iter()
+            .find(|line| line.starts_with(prefix))
+            .cloned()
+    };
+    let found = timeout(IO_TIMEOUT, async {
+        loop {
+            if let Some(line) = find() {
+                return line;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    // The panic message is built from a snapshot, never under the lock, so a failing
+    // test cannot poison the capture for the tests running beside it.
+    found.unwrap_or_else(|_| {
+        panic!(
+            "no captured line starts with {prefix:?}; captured: {:?}",
+            captured_lines()
+        )
+    })
 }
 
 /// The `<target>` field of every captured `[#N] Connected to destination <target> ...`
