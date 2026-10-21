@@ -19,7 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- The README's quickstart now points to the manual-testing guide in CONTRIBUTING, which shows how to run `scripts/peer.py` as the client and server around the proxy when working from a clone of the repository.
 - CONTRIBUTING's `cargo run` examples now use the README's ports (listening on 20502, forwarding to 20582) instead of 9000/9100 and 8000/8080. The decimal-formatting example no longer passes `--level info`, which hid the payload it was meant to show.
+
+### Dependencies
+
+- Updated `log` from 0.4.33 to 0.4.34
+- Updated `logged-stream` from 0.7.0 to 0.8.0
+- Updated `clap` from 4.6.6 to 4.6.7
+- Updated `tokio` from 1.53.1 to 1.53.2
 
 ## v0.3.0 (31.08.2026)
 
