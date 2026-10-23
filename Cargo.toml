@@ -1,6 +1,6 @@
 [package]
 name = "logged_tcp_proxy"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 authors = ["Alexandr Garbuzov <qwerty541zxc@gmail.com>"]
 description = "Command line interface for proxying TCP connections, printing the payload to the console in a chosen numeric format."
@@ -24,7 +24,7 @@ clap = { version = "4.6.7", features = ["std", "derive", "cargo"] }
 env_logger = "0.11.11"
 logged-stream = "0.8.0"
 log = "0.4.34"
-tokio = { version = "1.53.2", features = [
+tokio = { version = "1.53.3", features = [
     "io-util",
     "macros",
     "net",
