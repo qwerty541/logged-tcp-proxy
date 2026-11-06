@@ -60,7 +60,15 @@
       "Bash(diff:*)",
       "Bash(cmp:*)"
     ],
-    "deny": ["Bash(find * -delete)", "Bash(find * -exec rm )"]
+    "deny": [
+      "Bash(git reset:*)",
+      "Bash(git restore:*)",
+      "Bash(git clean:*)",
+      "Bash(find . -delete)",
+      "Bash(find * -delete)",
+      "Bash(find . -exec rm )",
+      "Bash(find * -exec rm )"
+    ]
   },
   "respectGitignore": true,
   "cleanupPeriodDays": 90
