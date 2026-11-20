@@ -27,9 +27,9 @@ use crate::args::TargetAddr;
 use crate::args::get_formatter_by_kind;
 use bytes::BytesMut;
 use logged_stream::ConsoleLogger;
+use logged_stream::EventKind;
+use logged_stream::EventKindFilter;
 use logged_stream::LoggedStream;
-use logged_stream::RecordKind;
-use logged_stream::RecordKindFilter;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncRead;
@@ -171,7 +171,7 @@ async fn incoming_connection_handle(
     let (client_stream_read_half, client_stream_write_half) = io::split(LoggedStream::new(
         client_stream,
         get_formatter_by_kind(arguments.formatting, arguments.separator.as_str()),
-        RecordKindFilter::new(&[RecordKind::Read, RecordKind::Write, RecordKind::Error]),
+        EventKindFilter::new(&[EventKind::Read, EventKind::Write, EventKind::Error]),
         ConsoleLogger::new_unchecked("debug").with_prefix(conn_log.prefix().to_string()),
     ));
     let server_stream = match connect_to_target(&arguments.remote_addr).await {
@@ -210,7 +210,7 @@ async fn incoming_connection_handle(
     let (server_stream_read_half, server_stream_write_half) = io::split(LoggedStream::new(
         server_stream,
         get_formatter_by_kind(arguments.formatting, arguments.separator.as_str()),
-        RecordKindFilter::new(&[RecordKind::Error]),
+        EventKindFilter::new(&[EventKind::Error]),
         ConsoleLogger::new_unchecked("debug").with_prefix(conn_log.prefix().to_string()),
     ));
 

@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Changed
+
+- The proxy relays data about twice as fast, whether the payload is printed or not. The bytes exchanged with the server were formatted for logging and then thrown away, because the same bytes are already shown on the client's side; logged-stream 0.9.0 no longer formats data that is not going to be logged. In a local test, 32 MiB went through at about 7.7 MB/s instead of 3.6 MB/s.
+
+### Dependencies
+
+- Updated `logged-stream` from 0.8.0 to 0.9.0
+
 ## v0.4.0 (22.10.2026)
 
 ### Added
