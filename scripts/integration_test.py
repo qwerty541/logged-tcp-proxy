@@ -431,7 +431,7 @@ def test_direction_markers_and_no_double_logging(binary):
         fail("[markers] the `>` reply line does not carry the same `[#%s]` tag" % conn_id, output)
 
     # De-duplication: neither payload may appear more than once anywhere in the
-    # output, which is what the server stream's RecordKindFilter guarantees.
+    # output, which is what the server stream's EventKindFilter guarantees.
     for label, payload_hex in (("request", request_hex), ("reply", reply_hex)):
         occurrences = output.count(payload_hex)
         if occurrences != 1:

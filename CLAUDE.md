@@ -313,13 +313,17 @@ All source lives in `src/`:
 ### Logging / de-duplication detail (intentional)
 
 Both directions of the conversation are logged on the **client stream**, whose
-`RecordKindFilter` keeps `Read`, `Write` and `Error` records: a read appears with a
+`EventKindFilter` keeps `Read`, `Write` and `Error` events: a read appears with a
 `<` marker, a write with a `>` marker, an error with `!`. The **server stream**'s
-`RecordKindFilter` keeps only `Error` — it deliberately does **not** re-log
+`EventKindFilter` keeps only `Error` — it deliberately does **not** re-log
 payload, because those bytes are the same ones already shown on the client side.
-This avoids printing every byte twice.
+This avoids printing every byte twice. It is also what keeps the server stream
+cheap: since logged-stream 0.9.0 a read or write is formatted only once its event
+is accepted (or a filter asks for its record), so the server stream's payload,
+rejected by kind, is never formatted at all — that alone doubled the proxy's
+throughput.
 
-logged-stream's `Shutdown` and `Drop` records are silenced on **both** streams.
+logged-stream's `Shutdown` and `Drop` events are filtered out on **both** streams.
 They came in two identical pairs per connection (`- Writer shutdown request.`,
 `x Deallocated.`) that did not say which socket they belonged to, and logged-stream
 cannot know why a writer was shut down — only `relay` knows that. So `relay` logs
@@ -381,12 +385,15 @@ valid level, so they cannot panic at runtime.)
 - `clap` (`std`, `derive`) — CLI parsing.
 - `env_logger` + `log` — logging frontend/facade.
 - `bytes` — `BytesMut` relay buffers.
-- `logged-stream` (`0.8.0`) — the companion crate (same author) that provides
+- `logged-stream` (`0.9.0`) — the companion crate (same author) that provides
   `LoggedStream`, the `BufferFormatter` implementations
   (`DecimalFormatter`, `LowercaseHexadecimalFormatter`,
   `UppercaseHexadecimalFormatter`, `BinaryFormatter`, `OctalFormatter`),
   `ConsoleLogger` (including the per-line prefix set via `with_prefix`, used for
-  the per-connection `[#N]` id tags), `RecordKindFilter`, and `RecordKind`.
+  the per-connection `[#N]` id tags), `EventKindFilter`, and `EventKind`. (0.9.0
+  renamed `RecordKind`, `RecordKindFilter` and `RecordFilter` to `EventKind`,
+  `EventKindFilter` and `EventFilter` — a filter judges *events*, and only an
+  accepted event becomes a *record* for the logger — and made formatting lazy.)
 
 Dev-dependencies (test-only; not compiled into the published binary and irrelevant
 to its users):
@@ -556,7 +563,7 @@ covers several cases:
 - **direction markers + no double logging** — against a remote whose reply differs
   from the request (an echo server cannot distinguish the directions), `<` marks
   the client's bytes and `>` the remote's, the markers are not swapped, and each
-  payload is logged **exactly once** — pinning the deliberate `RecordKindFilter`
+  payload is logged **exactly once** — pinning the deliberate `EventKindFilter`
   on the server stream that stops every byte being printed twice. Also pins
   that both payload directions carry the same `[#N]` connection-id tag.
 - **per-connection ids** — with two clients held open concurrently, each
