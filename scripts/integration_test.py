@@ -244,8 +244,9 @@ def recv_exact(sock, count):
     return b"".join(chunks)
 
 
-def start_proxy(binary, remote_port, level="debug", extra_args=()):
-    """Spawn the proxy on a free port pointing at `remote_port`. Returns (proc, port)."""
+def start_proxy(binary, remote_port, level="debug", extra_args=(), env=None):
+    """Spawn the proxy on a free port pointing at `remote_port`. Returns (proc, port).
+    `env`, when given, replaces the environment the proxy inherits."""
     proxy_port = free_port()
     proxy = subprocess.Popen(
         [
@@ -259,6 +260,7 @@ def start_proxy(binary, remote_port, level="debug", extra_args=()):
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        env=env,
     )
     return proxy, proxy_port
 
@@ -645,14 +647,25 @@ def test_level_filters_payload(binary):
     """`--level` controls whether the payload is printed at all.
 
     The payload is logged at `debug`, so it must appear at `--level debug` (the
-    default) and be suppressed at `--level info` — while the `INFO` lifecycle lines
-    still show, proving the relay really ran and the absence is not vacuous."""
+    default) and `--level trace`, and be suppressed at `--level info` — while the
+    `INFO` lifecycle lines still show, proving the relay really ran and the absence
+    is not vacuous.
+
+    Below `debug` the proxy does not even format the payload, which would be most of
+    its work, so it must judge by the level that logging really enables rather than
+    by `--level`: a `RUST_LOG` directive for logged-stream's module still prints the
+    payload at `--level info`."""
     payload = bytes([0xDE, 0xAD, 0xBE, 0xEF])
     payload_hex = ":".join("%02x" % b for b in payload)
 
-    def relay_at(level):
+    def relay_at(level, rust_log=None):
+        # `RUST_LOG` is set only where a run asks for it: one exported by whoever runs
+        # this script (say `logged_stream=debug`) would change what a level prints.
+        env = {name: value for name, value in os.environ.items() if name != "RUST_LOG"}
+        if rust_log is not None:
+            env["RUST_LOG"] = rust_log
         echo_server, echo_port = start_echo_server()
-        proxy, proxy_port = start_proxy(binary, echo_port, level=level)
+        proxy, proxy_port = start_proxy(binary, echo_port, level=level, env=env)
         drain, log_lines = start_output_drain(proxy)
         try:
             if not wait_for_listener(proxy_port):
@@ -692,7 +705,17 @@ def test_level_filters_payload(binary):
     if not re.search(info_summary, info_output):
         fail("[level] the close summary must remain visible at --level info", info_output)
 
-    print("OK [level] payload shown at debug, hidden at info (lifecycle lines kept)")
+    trace_output, _ = relay_at("trace")
+    if payload_hex not in trace_output:
+        fail("[level] the payload must be printed at --level trace", trace_output)
+
+    directive_output, _ = relay_at("info", rust_log="logged_stream=debug")
+    if payload_hex not in directive_output:
+        fail("[level] RUST_LOG=logged_stream=debug must print the payload at --level info",
+             directive_output)
+
+    print("OK [level] payload shown at debug and trace, hidden at info (lifecycle lines "
+          "kept), shown at info with RUST_LOG=logged_stream=debug")
 
 
 def test_unreachable_remote(binary):
