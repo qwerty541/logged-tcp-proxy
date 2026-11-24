@@ -150,6 +150,12 @@ All source lives in `src/`:
     handle, recording the endings it causes itself (`Teardown::ConnectFailed`,
     `Teardown::IdleTimeout`), and — when `--timeout` is set — creating the
     `conn::idle` clock and racing the relays against its watchdog.
+  - `client_stream_kinds(max_level)` (`pub(crate)`) — the event kinds the client
+    stream keeps: `Error` always, `Read` and `Write` (the payload) only when
+    `max_level` reaches `PAYLOAD_LEVEL` (`debug`), the level the payload is logged
+    at. The handler passes `log::max_level()` — the most verbose level `--level` or
+    any `RUST_LOG` directive enables — never `--level` itself. See
+    [Logging / de-duplication](#logging--de-duplication-detail-intentional) for why.
   - `connect_to_target(target)` (private) — opens the destination `TcpStream` for
     one client: a `TargetAddr::Socket` is dialed directly (no DNS), a
     `TargetAddr::Named` is resolved via DNS here (once per connection, tokio trying
@@ -323,6 +329,19 @@ is accepted (or a filter asks for its record), so the server stream's payload,
 rejected by kind, is never formatted at all — that alone doubled the proxy's
 throughput.
 
+The client stream's filter is level-aware on the same principle. Its payload is
+logged at `PAYLOAD_LEVEL` (`debug`), so when nothing can log at that level
+`client_stream_kinds` keeps only `Error` there too, and at `--level info` or above
+no payload is formatted at all. The output is the same — `log` would have discarded
+those records — but formatting is by far the proxy's most expensive work, so this
+makes it about 70 times faster at `info` (about 8 → 590 MB/s in a local test). The
+decision reads `log::max_level()`, never `--level`: a `RUST_LOG` module directive
+(`logged_stream=debug`) can raise the effective level above `--level`, and the
+payload must then still print — the black-box level test pins that. `max_level()`
+can only overestimate (a directive for another module keeps the payload formatted,
+then discarded), which costs speed, never output. It is read once per connection,
+as its streams are built; nothing changes the level after startup.
+
 logged-stream's `Shutdown` and `Drop` events are filtered out on **both** streams.
 They came in two identical pairs per connection (`- Writer shutdown request.`,
 `x Deallocated.`) that did not say which socket they belonged to, and logged-stream
@@ -330,8 +349,8 @@ cannot know why a writer was shut down — only `relay` knows that. So `relay` l
 one line per direction instead, through the connection's `ConnLog` at `debug`
 (`- client -> server closed (client finished sending)`, rendered by
 `stats::DirectionClosed`), and the close summary, logged after both sockets are
-released, marks the end. The console sink is `ConsoleLogger` at the `"debug"`
-label.
+released, marks the end. The console sink is `ConsoleLogger` at `PAYLOAD_LEVEL`
+(`debug`).
 
 ### Per-connection id tags
 
@@ -346,7 +365,7 @@ the same tag, so every line of a connection is attributable. Only listener-level
 lines (bind, accept errors) are untagged. `--no-connection-ids` disables the tags:
 the prefix becomes the empty string, which `ConsoleLogger` renders byte-for-byte
 like no prefix, so the untagged output shape is reproduced exactly. The payload
-records log at the `"debug"` label and `Error` records at the `error` level, which
+records log at `PAYLOAD_LEVEL` (`debug`) and `Error` records at the `error` level, which
 logged-stream escalates them to (prefix intact); the closing lines log at `debug`,
 and the other lifecycle lines above at `info` (the connect failure at `error`).
 
@@ -372,8 +391,8 @@ Runtime failures are handled gracefully rather than by panicking:
   handled: they end the process without running destructors, so they print no
   summaries.
 
-(The `ConsoleLogger::new_unchecked("debug")` calls take a compile-time-constant,
-valid level, so they cannot panic at runtime.)
+(The `ConsoleLogger::new_unchecked(PAYLOAD_LEVEL.as_str())` calls take the name of
+a `log::Level` constant, which always parses back, so they cannot panic at runtime.)
 
 ## Dependencies
 
@@ -494,7 +513,9 @@ runtime-drop (`interrupted`) path on every OS, and the `--no-close-summary` opt-
 the closing lines log at `debug`, below the capture, so on a real connection they
 are pinned by the black-box script —
 and [`formatting`](src/tests/formatting.rs) — the only module with no I/O at all: it
-pins what each `--formatting` mode renders and where `--separator` is placed),
+pins what each `--formatting` mode renders, where `--separator` is placed, and that
+the client stream keeps its payload at exactly the levels that print it, `debug` and
+`trace` (`client_stream_kinds`)),
 plus two scaffolding-only modules:
 [`helpers`](src/tests/helpers.rs) and [`log_capture`](src/tests/log_capture.rs).
 Conventions that keep the tree tidy:
@@ -586,7 +607,11 @@ covers several cases:
   while the payload, accept and closing lines still print.
 - **level filtering** — the payload appears at `--level debug` and is suppressed at
   `--level info`, while the `INFO` lifecycle lines — the close summary included —
-  still print (so the absence cannot pass vacuously).
+  still print (so the absence cannot pass vacuously). It also appears at `--level
+  trace`, and at `--level info` with `RUST_LOG=logged_stream=debug` — pinning that the
+  level-aware client filter reads the level logging really enables
+  (`log::max_level()`), not `--level`. `RUST_LOG` is set only for that run, so one
+  exported by whoever runs the script cannot skew the case.
 - **hostname remote** — relays through a `localhost:<port>` remote (DNS-resolved)
   and logs the tagged resolved-destination INFO line.
 - **real HTTP** — a real request/response (stdlib `http.server` + `urllib`) is
