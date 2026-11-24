@@ -1,5 +1,6 @@
 //! Payload formatting: `get_formatter_by_kind` must hand back the formatter the
-//! user actually asked for, and honor the requested separator.
+//! user actually asked for, and honor the requested separator — and the payload
+//! must be formatted only at the levels that print it.
 //!
 //! Printing the payload is what this tool exists for, yet every network test runs
 //! with the default `lowerhex`. Without these assertions three of the five
@@ -10,7 +11,10 @@
 
 use crate::args::PayloadFormattingKind;
 use crate::args::get_formatter_by_kind;
+use crate::conn::client_stream_kinds;
+use log::LevelFilter;
 use logged_stream::BufferFormatter;
+use logged_stream::EventKind;
 
 /// Bytes chosen so that no two formatters render them alike: `0x00` pins the zero
 /// padding, `0x01` separates decimal (`1`) from the fixed-width bases (`01`), and
@@ -91,4 +95,31 @@ fn the_separator_is_placed_between_bytes() {
         get_formatter_by_kind(PayloadFormattingKind::LowerHex, "--").format_buffer(&[0xDE]),
         "de",
     );
+}
+
+/// The client stream keeps its reads and writes — the payload — at exactly the
+/// levels that print it, `debug` and `trace`. Below them it rejects them by kind, so
+/// a payload nobody will see is never formatted (at `--level info` that formatting
+/// would be most of the proxy's work). Its errors, logged at `error`, are kept at
+/// every level. The levels are spelled out rather than derived from the payload's
+/// level in `conn`: the README promises the payload at `debug`.
+#[test]
+fn the_payload_is_formatted_only_at_levels_that_print_it() {
+    let with_payload = &[EventKind::Read, EventKind::Write, EventKind::Error][..];
+    let errors_only = &[EventKind::Error][..];
+
+    for (max_level, expected) in [
+        (LevelFilter::Off, errors_only),
+        (LevelFilter::Error, errors_only),
+        (LevelFilter::Warn, errors_only),
+        (LevelFilter::Info, errors_only),
+        (LevelFilter::Debug, with_payload),
+        (LevelFilter::Trace, with_payload),
+    ] {
+        assert_eq!(
+            client_stream_kinds(max_level),
+            expected,
+            "with nothing logged above `{max_level}`, the client stream should keep {expected:?}"
+        );
+    }
 }

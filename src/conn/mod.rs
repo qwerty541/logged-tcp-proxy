@@ -157,6 +157,33 @@ async fn connect_to_target(target: &TargetAddr) -> io::Result<tokio_net::TcpStre
     }
 }
 
+/// The level the payload is logged at: the client stream's `<` and `>` records. Both
+/// streams' loggers are built with it; their `!` records are logged at `error`
+/// whatever it says, as logged-stream escalates them.
+const PAYLOAD_LEVEL: log::Level = log::Level::Debug;
+
+/// The events the client stream logs, given `max_level`, the most verbose level
+/// anything can be logged at.
+///
+/// Its reads and writes — the payload — are kept only when [`PAYLOAD_LEVEL`] is
+/// enabled. Below that level the `log` macros would discard their records anyway,
+/// but logged-stream formats an accepted read or write before its logger runs, so
+/// the payload would still be rendered, byte by byte, only to be thrown away — by
+/// far the most expensive thing the proxy does. A read or write rejected by kind is
+/// never formatted, and the output is the same. Errors are kept at every level.
+///
+/// Pass `log::max_level()`, never `--level`: a `RUST_LOG` directive can raise one
+/// module above `--level` (`RUST_LOG=logged_stream=debug` prints the payload at
+/// `--level info`), and `log::max_level()` is the highest level any directive
+/// enables. Overestimating can only cost speed, never output.
+pub(crate) fn client_stream_kinds(max_level: log::LevelFilter) -> &'static [EventKind] {
+    if PAYLOAD_LEVEL <= max_level {
+        &[EventKind::Read, EventKind::Write, EventKind::Error]
+    } else {
+        &[EventKind::Error]
+    }
+}
+
 async fn incoming_connection_handle(
     arguments: Arguments,
     client_stream: tokio_net::TcpStream,
@@ -164,15 +191,17 @@ async fn incoming_connection_handle(
 ) {
     let conn_log = conn_stats.conn_log();
     // The client stream logs the conversation: both directions' payload (`<` for
-    // what it reads from the client, `>` for what it writes back) and its `!` errors.
+    // what it reads from the client, `>` for what it writes back) and its `!` errors
+    // — the payload only at the levels that print it, see `client_stream_kinds`.
     // Its shutdown and drop records stay silent, on both streams: `relay` logs one
     // clearer line per direction as it closes (which way, and why), and the close
     // summary marks the end.
     let (client_stream_read_half, client_stream_write_half) = io::split(LoggedStream::new(
         client_stream,
         get_formatter_by_kind(arguments.formatting, arguments.separator.as_str()),
-        EventKindFilter::new(&[EventKind::Read, EventKind::Write, EventKind::Error]),
-        ConsoleLogger::new_unchecked("debug").with_prefix(conn_log.prefix().to_string()),
+        EventKindFilter::new(client_stream_kinds(log::max_level())),
+        ConsoleLogger::new_unchecked(PAYLOAD_LEVEL.as_str())
+            .with_prefix(conn_log.prefix().to_string()),
     ));
     let server_stream = match connect_to_target(&arguments.remote_addr).await {
         Ok(stream) => stream,
@@ -211,7 +240,8 @@ async fn incoming_connection_handle(
         server_stream,
         get_formatter_by_kind(arguments.formatting, arguments.separator.as_str()),
         EventKindFilter::new(&[EventKind::Error]),
-        ConsoleLogger::new_unchecked("debug").with_prefix(conn_log.prefix().to_string()),
+        ConsoleLogger::new_unchecked(PAYLOAD_LEVEL.as_str())
+            .with_prefix(conn_log.prefix().to_string()),
     ));
 
     // Relay both directions concurrently, running each to completion. As each
