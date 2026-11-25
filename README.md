@@ -181,10 +181,13 @@ Below are the supported command-line options. The general form is
 Run `logged_tcp_proxy --help` for the canonical usage output (it also lists `-h, --help` and `-V, --version`).
 
 > [!NOTE] 
-> the relayed payload is logged at the `debug` level. Keep `--level` at
+> The relayed payload is logged at the `debug` level. Keep `--level` at
 > `debug` (the default) or `trace` to see it — setting `--level info` or higher hides
 > the payload and leaves only the lifecycle (`INFO`) lines, including each
-> connection's close summary.
+> connection's close summary. Formatting and printing the payload is by far the
+> proxy's most expensive work, so with it hidden the proxy relays data many times
+> faster: use `--level info` when the close summaries are all you need, such as under
+> heavy traffic.
 
 ## Example
 

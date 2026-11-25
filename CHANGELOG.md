@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The proxy relays data about twice as fast, whether the payload is printed or not. The bytes exchanged with the server were formatted for logging and then thrown away, because the same bytes are already shown on the client's side; logged-stream 0.9.0 no longer formats data that is not going to be logged. In a local test, 32 MiB went through at about 7.7 MB/s instead of 3.6 MB/s.
+- The proxy relays data about twice as fast while it prints the payload (the default `--level debug`). The bytes exchanged with the server were formatted for logging and then thrown away, because the same bytes are already shown on the client's side; logged-stream 0.9.0 no longer formats data that is not going to be logged. In a local test, 32 MiB went through at about 8 MB/s instead of 4.3 MB/s.
+- With `--level info` or higher, where the payload is not printed, the proxy now relays data over a hundred times faster: until now it still formatted the payload for logging at those levels, only to throw it away. In a local test it relayed about 590 MB/s instead of 4.2 MB/s. The output is unchanged.
 
 ### Dependencies
 
