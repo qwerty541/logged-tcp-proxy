@@ -52,12 +52,14 @@ IO_TIMEOUT = 5.0      # seconds for any single client socket operation
 def fail(message, output=None):
     """Print the failure and exit non-zero.
 
-    Pass the proxy's captured output as `output` whenever it is available: it is
-    dumped before the message (so the `FAIL:` line stays last and easy to spot),
-    which is usually the only diagnostic material for a failure that reproduces
-    on a CI runner and not locally."""
+    Pass the captured output as `output` whenever it is available (the proxy's,
+    or each terminal's for a peer recipe): it is usually the only diagnostic
+    material for a failure that reproduces on a CI runner and not locally. It
+    is dumped before the message, which keeps the `FAIL:` line last and easy to
+    spot, under a header repeating the message: the dump follows the previous
+    case's OK line and must not be mistaken for that case's output."""
     if output is not None:
-        print("---- proxy output ----\n" + output + "----------------------")
+        print("---- captured output for %s ----\n%s----------------------" % (message, output))
     print("FAIL: " + message)
     sys.exit(1)
 
@@ -1161,13 +1163,24 @@ def load_peer():
 
 
 def missing_in_order(text, needles):
-    """The first of `needles` that does not occur in `text` after the previous
-    one, or None when they all occur in order."""
+    """None when `needles` all occur in `text` in this order. Otherwise what is
+    missing, worded to follow "did not print": the first needle that does not
+    occur after the previous one, plus "(only before it)" when it occurs between
+    the needle before that and the previous one, as when two lines come out
+    swapped. (Anywhere earlier is not enough: a needle can recur, or be part of
+    an earlier needle's line, without anything being out of order.)"""
     position = 0
+    previous = None  # (needle, where its search began, where it was found)
     for needle in needles:
         found = text.find(needle, position)
         if found < 0:
-            return needle
+            if previous is None:
+                return repr(needle)
+            previous_needle, previous_start, previous_found = previous
+            swapped = 0 <= text.find(needle, previous_start) < previous_found
+            return "%r after %r%s" % (needle, previous_needle,
+                                      " (only before it)" if swapped else "")
+        previous = (needle, position, found)
         position = found + len(needle)
     return None
 
@@ -1260,7 +1273,7 @@ def run_peer_recipe(binary, peer, recipe):
     for role in ("client", "proxy", "server"):
         missing = missing_in_order(output(role), recipe["expect"][role])
         if missing is not None:
-            fail("[%s] the %s did not print %r (in order)" % (case, role, missing), all_output())
+            fail("[%s] the %s did not print %s" % (case, role, missing), all_output())
         for unwanted in recipe.get("absent", {}).get(role, []):
             if unwanted in output(role):
                 fail("[%s] the %s printed %r" % (case, role, unwanted), all_output())
@@ -1282,12 +1295,59 @@ def run_peer_recipe(binary, peer, recipe):
     print("OK [%s] %s" % (case, recipe["about"]))
 
 
+def check_fin_logged_before_shutdown(peer):
+    """Conn.shut() prints its "- FIN sent" line before it shuts the socket down,
+    as Conn.send() prints a payload before sending it. The other side can answer
+    a FIN at once, and the reader thread prints that answer (its "= EOF"), so a
+    line logged after the shutdown could come out below the answer, against the
+    order the recipes expect. A real run catches that only rarely (it once failed
+    the pipe recipe on a Windows runner), so the order of the two calls is
+    checked directly, on a socket pair."""
+    calls = []
+
+    class RecordingSocket:
+        """A real socket, except that shutdown() is recorded."""
+
+        def __init__(self, sock):
+            self.sock = sock
+
+        def shutdown(self, how):
+            calls.append("shutdown")
+            self.sock.shutdown(how)
+
+        def __getattr__(self, name):  # everything else: fileno() for select(), recv()
+            return getattr(self.sock, name)
+
+    class RecordingLog:
+        """Records the lines a peer.Log would print."""
+
+        def event(self, tag, kind, text):
+            calls.append(kind + " " + text)
+
+        def data(self, tag, arrow, data):
+            calls.append(arrow)
+
+    ours, theirs = socket.socketpair()
+    conn = peer.Conn(RecordingSocket(ours), RecordingLog(), "c:0", "client")
+    try:
+        conn.shut()
+    finally:
+        conn.stop.set()  # as finish() does: the reader polls, so it stops promptly
+        conn.reader.join()
+        ours.close()
+        theirs.close()
+    if len(calls) != 2 or not calls[0].startswith("- FIN sent") or calls[1] != "shutdown":
+        fail("[peer] Conn.shut() must log '- FIN sent' before it shuts the socket down, "
+             "not after; got %r" % calls)
+
+
 def test_peer_recipes(binary):
     """The manual-testing peers (scripts/peer.py) keep working against the real
     binary: their byte renderings match RENDERINGS (which the relay + logging
     cases check against the binary) for all 256 byte values, a loop must still
-    be paced, every recipe still parses and prints, and every recipe marked `ci`
-    runs for real (see run_peer_recipe)."""
+    be paced, "- FIN sent" is printed before the FIN goes out (see
+    check_fin_logged_before_shutdown), every recipe still parses and prints, and
+    every recipe marked `ci` runs for real (see run_peer_recipe)."""
     peer = load_peer()
     if set(peer.FORMATS) != set(RENDERINGS):
         fail("[peer] peer.py's -f values %s differ from the proxy's %s"
@@ -1317,6 +1377,8 @@ def test_peer_recipes(binary):
     if not peer.paces([("read", None)]):
         fail("[peer] a read step must count as pacing a loop")
 
+    check_fin_logged_before_shutdown(peer)
+
     try:
         peer.check_recipes()
     except ValueError as error:
@@ -1337,6 +1399,10 @@ def test_peer_recipes(binary):
 
 
 def main():
+    # Write each line out at once even when stdout is a pipe, as in CI. Block-
+    # buffered, every result would appear only at exit, all with one timestamp
+    # and after cargo's own output, and a job killed first would lose them all.
+    sys.stdout.reconfigure(line_buffering=True)
     binary = binary_path()
     print("testing binary: " + binary)
     # One case per `--formatting` value: printing the payload in the requested
