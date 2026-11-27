@@ -390,14 +390,19 @@ class Conn:
     def shut(self):
         if self.shut_sent:
             return
+        # Logged before the shutdown, as send() logs before sending: once the FIN
+        # is out, the other side may answer it at once (with its own FIN, or a
+        # reply sent on EOF), and the reader thread could print that answer
+        # before this thread got to a line logged afterwards.
+        self.log.event(self.tag, "-", "FIN sent (write side shut down)")
         try:
             self.sock.shutdown(socket.SHUT_WR)
         except OSError as error:
-            self.log.event(self.tag, "!", "shutdown failed: " + describe(error))
+            self.log.event(self.tag, "!", "shutdown failed, so no FIN was sent: "
+                           + describe(error))
             self.broken = True
             raise Broken() from None
         self.shut_sent = True
-        self.log.event(self.tag, "-", "FIN sent (write side shut down)")
 
     def next_chunk(self):
         """The next received chunk not yet consumed, waiting for it; None once

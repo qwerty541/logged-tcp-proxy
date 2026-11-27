@@ -630,7 +630,10 @@ covers several cases:
   rejects `0`.
 - **manual-testing peers** — the byte renderings of [`scripts/peer.py`](scripts/peer.py)
   match the `RENDERINGS` that the relay + logging cases check against the binary,
-  for all 256 byte values, and every recipe still parses and prints. Each `ci` recipe runs end to end:
+  for all 256 byte values; `Conn.shut()` prints `- FIN sent` before it shuts the
+  socket down (checked directly, on a socket pair, since a real run would show the
+  wrong order only rarely); and every recipe still parses and prints. Each `ci`
+  recipe runs end to end:
   - the peer server, the proxy and the peer client start on ephemeral ports, in
     that order;
   - the server and the proxy are each awaited through their ready line (no probe
@@ -661,6 +664,14 @@ By default it builds the debug binary first; set `LOGGED_TCP_PROXY_BIN` to a
 prebuilt binary to skip the build. In CI it runs as the dedicated `integration`
 job.
 
+Its stdout is line-buffered even when piped, so the CI log shows each result as it
+happens (block-buffered, all of them appeared at exit with one timestamp, after
+cargo's output, and a killed job would lose them). A failing case dumps the output
+it captured — the proxy's, or each terminal's for a peer recipe — under a header
+that repeats the failure, then ends with the `FAIL:` line. When two adjacent
+`expect` needles of a recipe came out swapped, the failure says so: `the client did
+not print '= EOF' after '- FIN sent' (only before it)`.
+
 ## Manual testing
 
 [`scripts/peer.py`](scripts/peer.py) is the peer server (`127.0.0.1:20582`, the
@@ -686,6 +697,15 @@ Invariants to keep when editing it:
   side's FIN before closing; only `rst` resets. The reader thread polls with
   `select()` and is stopped before any close, because closing a socket under a
   blocked `recv()` can delay its FIN/RST.
+- **Log before acting.** A peer prints the line for what it does — a payload line,
+  `- FIN sent`, its closing `x` line — before the call that does it. Whatever that
+  call causes, such as the other side's reply or its FIN coming back as this side's
+  `= EOF` (printed by the reader thread), can then never come out above it, and the
+  recipes' ordered `expect` needles rely on that. If the call then fails, the `!`
+  line after it says so (`shutdown failed, so no FIN was sent: ...`), so a printed
+  line is never left as a false claim. `- FIN sent` used to be printed after
+  `shutdown()`, and once an `= EOF` overtook it on a Windows runner; the black-box
+  test now checks `Conn.shut()`'s order directly.
 - **Recipes are data.** `RECIPES` is what `peer.py recipes` prints. Set
   `ci: True` only for scenarios whose output is deterministic on every OS.
 
