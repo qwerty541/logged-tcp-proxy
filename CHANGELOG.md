@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The proxy relays data about twice as fast while it prints the payload (the default `--level debug`). The bytes exchanged with the server were formatted for logging and then thrown away, because the same bytes are already shown on the client's side; logged-stream 0.9.0 no longer formats data that is not going to be logged. In a local test, 32 MiB went through at about 8 MB/s instead of 4.3 MB/s.
 - With `--level info` or higher, where the payload is not printed, the proxy now relays data over a hundred times faster: until now it still formatted the payload for logging at those levels, only to throw it away. In a local test it relayed about 590 MB/s instead of 4.2 MB/s. The output is unchanged.
 
+### Fixed
+
+- `scripts/peer.py` now prints `- FIN sent` before telling the other side it has finished sending, not after, so the other side's answer can no longer appear above that line. The wrong order could make the black-box test (`scripts/integration_test.py`) fail; it happened once, on a Windows runner. When its output is piped, as in CI, that test now also prints each result as soon as it is known instead of all at the end, and when two expected lines come out swapped, its failure message says so. Both scripts are repository tooling, not part of the published crate.
+
 ### Dependencies
 
 - Updated `logged-stream` from 0.8.0 to 0.9.0
